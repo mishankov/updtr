@@ -20,7 +20,9 @@ import (
 )
 
 type Adapter struct {
-	Now func() time.Time
+	Now           func() time.Time
+	listVersions  func(context.Context, string, string) ([]string, error)
+	releaseLookup func(context.Context, string, string, string) candidate
 }
 
 func New() *Adapter {
@@ -65,16 +67,7 @@ func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.Tar
 			continue
 		}
 
-		candidate, err := a.resolveCandidate(ctx, target.AbsPath, module, current)
-		input := policy.Input{ModulePath: module, CurrentVersion: current}
-		if err != nil {
-			input.ResolutionError = err.Error()
-		} else if candidate.Version != "" {
-			input.CandidateVersion = candidate.Version
-			input.ReleaseTime = candidate.ReleaseTime
-			input.ReleaseTrusted = candidate.ReleaseTrusted
-		}
-		if decision, show := policy.Decide(target.Policy, input, now); show {
+		if decision, show := a.selectDecision(ctx, target, module, current, now); show {
 			plan.Decisions = append(plan.Decisions, decision)
 		}
 	}
@@ -182,37 +175,107 @@ type moduleInfo struct {
 	Time    *time.Time `json:"Time"`
 }
 
-func (a *Adapter) resolveCandidate(ctx context.Context, dir string, modulePath string, current string) (candidate, error) {
+func (a *Adapter) selectDecision(ctx context.Context, target config.Target, modulePath string, current string, now time.Time) (core.Decision, bool) {
+	input := policy.Input{ModulePath: modulePath, CurrentVersion: current}
+
 	if !semver.IsValid(current) {
-		return candidate{}, fmt.Errorf("current version %q is not a valid Go module version", current)
+		input.ResolutionError = fmt.Sprintf("current version %q is not a valid Go module version", current)
+		return policy.Decide(target.Policy, input, now)
+	}
+
+	versions, err := a.moduleVersions(ctx, target.AbsPath, modulePath)
+	if err != nil {
+		input.ResolutionError = err.Error()
+		return policy.Decide(target.Policy, input, now)
+	}
+
+	candidates := selectCandidates(current, versions)
+	if len(candidates) == 0 {
+		return policy.Decide(target.Policy, input, now)
+	}
+
+	var firstBlocked *core.Decision
+	for _, version := range candidates {
+		candidate := a.candidateRelease(ctx, target.AbsPath, modulePath, version)
+		candidateInput := input
+		candidateInput.CandidateVersion = candidate.Version
+		candidateInput.ReleaseTime = candidate.ReleaseTime
+		candidateInput.ReleaseTrusted = candidate.ReleaseTrusted
+
+		decision, show := policy.Decide(target.Policy, candidateInput, now)
+		if !show {
+			continue
+		}
+		if decision.Eligible {
+			return decision, true
+		}
+		if candidateLocalBlocker(target.Policy, decision.BlockedReason) {
+			if firstBlocked == nil {
+				blocked := decision
+				firstBlocked = &blocked
+			}
+			continue
+		}
+		return decision, true
+	}
+
+	if firstBlocked != nil {
+		return *firstBlocked, true
+	}
+	return policy.Decide(target.Policy, input, now)
+}
+
+func candidateLocalBlocker(policy config.Policy, reason core.Reason) bool {
+	if policy.QuarantineDays == nil {
+		return false
+	}
+	switch reason {
+	case core.ReasonQuarantined, core.ReasonMissingReleaseDate, core.ReasonUntrustedReleaseDate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Adapter) moduleVersions(ctx context.Context, dir string, modulePath string) ([]string, error) {
+	if a.listVersions != nil {
+		return a.listVersions(ctx, dir, modulePath)
 	}
 	output, err := runGo(ctx, dir, "list", "-m", "-versions", "-json", modulePath)
 	if err != nil {
-		return candidate{}, err
+		return nil, err
 	}
 	var versions moduleVersions
 	if err := json.Unmarshal([]byte(output), &versions); err != nil {
-		return candidate{}, fmt.Errorf("parse versions for %s: %w", modulePath, err)
+		return nil, fmt.Errorf("parse versions for %s: %w", modulePath, err)
 	}
-	selected := selectCandidate(current, versions.Versions)
-	if selected == "" {
-		return candidate{}, nil
-	}
+	return versions.Versions, nil
+}
 
-	infoOutput, err := runGo(ctx, dir, "list", "-m", "-json", modulePath+"@"+selected)
+func (a *Adapter) candidateRelease(ctx context.Context, dir string, modulePath string, version string) candidate {
+	if a.releaseLookup != nil {
+		candidate := a.releaseLookup(ctx, dir, modulePath, version)
+		candidate.Version = version
+		return candidate
+	}
+	return a.goCandidateRelease(ctx, dir, modulePath, version)
+}
+
+func (a *Adapter) goCandidateRelease(ctx context.Context, dir string, modulePath string, version string) candidate {
+	infoOutput, err := runGo(ctx, dir, "list", "-m", "-json", modulePath+"@"+version)
 	if err != nil {
-		return candidate{Version: selected}, nil
+		return candidate{Version: version}
 	}
 	var info moduleInfo
 	if err := json.Unmarshal([]byte(infoOutput), &info); err != nil {
-		return candidate{Version: selected}, nil
+		return candidate{Version: version}
 	}
-	return candidate{Version: selected, ReleaseTime: info.Time, ReleaseTrusted: info.Time != nil}, nil
+	return candidate{Version: version, ReleaseTime: info.Time, ReleaseTrusted: info.Time != nil}
 }
 
-func selectCandidate(current string, versions []string) string {
+func selectCandidates(current string, versions []string) []string {
 	currentStable := semver.Prerelease(current) == ""
-	best := ""
+	var candidates []string
 	for _, version := range versions {
 		if !semver.IsValid(version) || semver.Compare(version, current) <= 0 {
 			continue
@@ -220,11 +283,12 @@ func selectCandidate(current string, versions []string) string {
 		if currentStable && semver.Prerelease(version) != "" {
 			continue
 		}
-		if best == "" || semver.Compare(version, best) > 0 {
-			best = version
-		}
+		candidates = append(candidates, version)
 	}
-	return best
+	sort.Slice(candidates, func(i, j int) bool {
+		return semver.Compare(candidates[i], candidates[j]) > 0
+	})
+	return candidates
 }
 
 func runGo(ctx context.Context, dir string, args ...string) (string, error) {

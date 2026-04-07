@@ -11,7 +11,8 @@ import (
 )
 
 type Engine struct {
-	Go *goecosystem.Adapter
+	Go        *goecosystem.Adapter
+	goAdapter goAdapter
 }
 
 func New() *Engine {
@@ -98,6 +99,7 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 }
 
 type goAdapter interface {
+	CheckPrereq() error
 	PlanTarget(context.Context, config.Target) core.TargetPlan
 	ApplyUpdate(context.Context, config.Target, string, string) (string, error)
 	Tidy(context.Context, config.Target) (string, error)
@@ -105,13 +107,16 @@ type goAdapter interface {
 }
 
 func (e *Engine) adapterFor(target config.Target) goAdapter {
+	if e.goAdapter != nil {
+		return e.goAdapter
+	}
 	return e.Go
 }
 
 func (e *Engine) checkPrereqs(targets []config.Target) error {
 	for _, target := range targets {
 		if target.Ecosystem == "go" {
-			return e.Go.CheckPrereq()
+			return e.adapterFor(target).CheckPrereq()
 		}
 	}
 	return nil
