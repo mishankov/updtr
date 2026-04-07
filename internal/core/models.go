@@ -8,6 +8,8 @@ import (
 
 type Reason string
 
+type DependencyRelationship string
+
 const (
 	ReasonPinMismatch              Reason = "pin_mismatch"
 	ReasonPinned                   Reason = "pinned"
@@ -21,12 +23,18 @@ const (
 	WarningAdditionalDirectChanges        = "additional_direct_changes_detected"
 )
 
+const (
+	RelationshipDirect   DependencyRelationship = "direct"
+	RelationshipIndirect DependencyRelationship = "indirect"
+)
+
 type Decision struct {
 	ModulePath       string
 	CurrentVersion   string
 	CandidateVersion string
 	PinVersion       string
 	ReleaseTime      *time.Time
+	Relationship     DependencyRelationship
 	Eligible         bool
 	BlockedReason    Reason
 	Message          string
@@ -46,6 +54,7 @@ type AppliedUpdate struct {
 	ModulePath    string
 	FromVersion   string
 	ToVersion     string
+	Relationship  DependencyRelationship
 	CommandOutput string
 }
 

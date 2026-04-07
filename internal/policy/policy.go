@@ -12,6 +12,7 @@ type Input struct {
 	CurrentVersion   string
 	CandidateVersion string
 	ReleaseTime      *time.Time
+	Relationship     core.DependencyRelationship
 	ReleaseTrusted   bool
 	ResolutionError  string
 }
@@ -22,6 +23,7 @@ func Decide(policy config.Policy, input Input, now time.Time) (core.Decision, bo
 		CurrentVersion:   input.CurrentVersion,
 		CandidateVersion: input.CandidateVersion,
 		ReleaseTime:      input.ReleaseTime,
+		Relationship:     input.Relationship,
 	}
 
 	if pin, ok := policy.Pins[input.ModulePath]; ok {

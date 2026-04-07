@@ -27,7 +27,7 @@ func render(out io.Writer, result core.RunResult, apply bool) {
 		if len(target.Applied) > 0 {
 			_, _ = fmt.Fprintln(out, "Applied:")
 			for _, update := range target.Applied {
-				_, _ = fmt.Fprintf(out, "  - %s %s -> %s\n", update.ModulePath, update.FromVersion, update.ToVersion)
+				_, _ = fmt.Fprintf(out, "  - %s %s -> %s\n", moduleWithRelationship(update.ModulePath, update.Relationship), update.FromVersion, update.ToVersion)
 			}
 		}
 
@@ -35,13 +35,13 @@ func render(out io.Writer, result core.RunResult, apply bool) {
 		if !apply && len(eligible) > 0 {
 			_, _ = fmt.Fprintln(out, "Eligible:")
 			for _, decision := range eligible {
-				_, _ = fmt.Fprintf(out, "  - %s %s -> %s%s\n", decision.ModulePath, decision.CurrentVersion, decision.CandidateVersion, releaseSuffix(decision))
+				_, _ = fmt.Fprintf(out, "  - %s %s -> %s%s\n", moduleWithRelationship(decision.ModulePath, decision.Relationship), decision.CurrentVersion, decision.CandidateVersion, releaseSuffix(decision))
 			}
 		}
 		if len(blocked) > 0 {
 			_, _ = fmt.Fprintln(out, "Blocked:")
 			for _, decision := range blocked {
-				_, _ = fmt.Fprintf(out, "  - %s%s: %s%s\n", decision.ModulePath, versionSuffix(decision), decision.BlockedReason, blockedSuffix(decision))
+				_, _ = fmt.Fprintf(out, "  - %s%s: %s%s\n", moduleWithRelationship(decision.ModulePath, decision.Relationship), versionSuffix(decision), decision.BlockedReason, blockedSuffix(decision))
 			}
 		}
 		if len(target.Warnings) > 0 {
@@ -119,4 +119,11 @@ func messageSuffix(decision core.Decision) string {
 		return ""
 	}
 	return " (" + decision.Message + ")"
+}
+
+func moduleWithRelationship(modulePath string, relationship core.DependencyRelationship) string {
+	if relationship == core.RelationshipIndirect {
+		return modulePath + " (indirect)"
+	}
+	return modulePath
 }

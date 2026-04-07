@@ -49,25 +49,19 @@ func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.Tar
 		return plan
 	}
 
-	modules := make([]string, 0, len(state.Direct))
-	for module := range state.Direct {
-		modules = append(modules, module)
-	}
-	sort.Strings(modules)
-
 	now := a.now()
-	for _, module := range modules {
-		current := state.Direct[module]
-		if state.Replaced.Contains(module, current) {
+	for _, requirement := range state.Requirements(target.IncludeIndirect) {
+		if state.Replaced.Contains(requirement.Path, requirement.Version) {
 			plan.Decisions = append(plan.Decisions, core.Decision{
-				ModulePath:     module,
-				CurrentVersion: current,
+				ModulePath:     requirement.Path,
+				CurrentVersion: requirement.Version,
+				Relationship:   requirement.Relationship,
 				BlockedReason:  core.ReasonReplacedDependency,
 			})
 			continue
 		}
 
-		if decision, show := a.selectDecision(ctx, target, module, current, now); show {
+		if decision, show := a.selectDecision(ctx, target, requirement, now); show {
 			plan.Decisions = append(plan.Decisions, decision)
 		}
 	}
@@ -99,7 +93,44 @@ func (a *Adapter) now() time.Time {
 
 type moduleState struct {
 	Direct   map[string]string
+	Indirect map[string]string
 	Replaced replacedModules
+}
+
+type dependencyRequirement struct {
+	Path         string
+	Version      string
+	Relationship core.DependencyRelationship
+}
+
+func (s moduleState) Requirements(includeIndirect bool) []dependencyRequirement {
+	requirements := make([]dependencyRequirement, 0, len(s.Direct)+len(s.Indirect))
+	for module, version := range s.Direct {
+		requirements = append(requirements, dependencyRequirement{
+			Path:         module,
+			Version:      version,
+			Relationship: core.RelationshipDirect,
+		})
+	}
+	if includeIndirect {
+		for module, version := range s.Indirect {
+			if _, direct := s.Direct[module]; direct {
+				continue
+			}
+			requirements = append(requirements, dependencyRequirement{
+				Path:         module,
+				Version:      version,
+				Relationship: core.RelationshipIndirect,
+			})
+		}
+	}
+	sort.Slice(requirements, func(i, j int) bool {
+		if requirements[i].Path != requirements[j].Path {
+			return requirements[i].Path < requirements[j].Path
+		}
+		return requirements[i].Relationship < requirements[j].Relationship
+	})
+	return requirements
 }
 
 type replacedModules map[string]map[string]struct{}
@@ -135,13 +166,18 @@ func readModuleState(dir string) (moduleState, error) {
 	}
 	state := moduleState{
 		Direct:   map[string]string{},
+		Indirect: map[string]string{},
 		Replaced: replacedModules{},
 	}
 	for _, req := range parsed.Require {
 		if req.Indirect {
+			if _, direct := state.Direct[req.Mod.Path]; !direct {
+				state.Indirect[req.Mod.Path] = req.Mod.Version
+			}
 			continue
 		}
 		state.Direct[req.Mod.Path] = req.Mod.Version
+		delete(state.Indirect, req.Mod.Path)
 	}
 	for _, replace := range parsed.Replace {
 		state.Replaced.Add(replace.Old.Path, replace.Old.Version)
@@ -175,28 +211,32 @@ type moduleInfo struct {
 	Time    *time.Time `json:"Time"`
 }
 
-func (a *Adapter) selectDecision(ctx context.Context, target config.Target, modulePath string, current string, now time.Time) (core.Decision, bool) {
-	input := policy.Input{ModulePath: modulePath, CurrentVersion: current}
+func (a *Adapter) selectDecision(ctx context.Context, target config.Target, requirement dependencyRequirement, now time.Time) (core.Decision, bool) {
+	input := policy.Input{
+		ModulePath:     requirement.Path,
+		CurrentVersion: requirement.Version,
+		Relationship:   requirement.Relationship,
+	}
 
-	if !semver.IsValid(current) {
-		input.ResolutionError = fmt.Sprintf("current version %q is not a valid Go module version", current)
+	if !semver.IsValid(requirement.Version) {
+		input.ResolutionError = fmt.Sprintf("current version %q is not a valid Go module version", requirement.Version)
 		return policy.Decide(target.Policy, input, now)
 	}
 
-	versions, err := a.moduleVersions(ctx, target.AbsPath, modulePath)
+	versions, err := a.moduleVersions(ctx, target.AbsPath, requirement.Path)
 	if err != nil {
 		input.ResolutionError = err.Error()
 		return policy.Decide(target.Policy, input, now)
 	}
 
-	candidates := selectCandidates(current, versions)
+	candidates := selectCandidates(requirement.Version, versions)
 	if len(candidates) == 0 {
 		return policy.Decide(target.Policy, input, now)
 	}
 
 	var firstBlocked *core.Decision
 	for _, version := range candidates {
-		candidate := a.candidateRelease(ctx, target.AbsPath, modulePath, version)
+		candidate := a.candidateRelease(ctx, target.AbsPath, requirement.Path, version)
 		candidateInput := input
 		candidateInput.CandidateVersion = candidate.Version
 		candidateInput.ReleaseTime = candidate.ReleaseTime

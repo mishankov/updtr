@@ -51,6 +51,43 @@ pin = { "github.com/a/pin" = "v1.1.0", "github.com/b/extra" = "v0.1.0" }
 	}
 }
 
+func TestLoadTargetIncludeIndirect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "updtr.toml")
+	writeConfig(t, path, `
+[[targets]]
+name = "omitted"
+ecosystem = "go"
+path = "."
+
+[[targets]]
+name = "disabled"
+ecosystem = "go"
+path = "./disabled"
+include_indirect = false
+
+[[targets]]
+name = "enabled"
+ecosystem = "go"
+path = "./enabled"
+include_indirect = true
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Targets[0].IncludeIndirect {
+		t.Fatalf("omitted include_indirect = true, want false")
+	}
+	if cfg.Targets[1].IncludeIndirect {
+		t.Fatalf("include_indirect=false parsed as true")
+	}
+	if !cfg.Targets[2].IncludeIndirect {
+		t.Fatalf("include_indirect=true parsed as false")
+	}
+}
+
 func TestLoadRejectsInvalidConfig(t *testing.T) {
 	cases := map[string]string{
 		"unknown key": `
@@ -59,6 +96,13 @@ unexpected = true
 name = "root"
 ecosystem = "go"
 path = "."
+`,
+		"unknown target key": `
+[[targets]]
+name = "root"
+ecosystem = "go"
+path = "."
+include_indirekt = true
 `,
 		"duplicate target name": `
 [[targets]]

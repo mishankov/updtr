@@ -208,13 +208,182 @@ func TestPlanTargetVersionTrackSelection(t *testing.T) {
 	})
 }
 
+func TestPlanTargetIncludesIndirectRequirementsOnlyWhenTargetOptsIn(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := mixedRequirementModuleDir(t)
+	releases := map[string]candidate{
+		"v1.2.0": trustedRelease(now.Add(-24 * time.Hour)),
+		"v1.3.0": trustedRelease(now.Add(-24 * time.Hour)),
+	}
+	versions := map[string][]string{
+		"example.com/direct":   {"v1.0.0", "v1.2.0"},
+		"example.com/indirect": {"v1.0.0", "v1.3.0"},
+	}
+
+	t.Run("omitted option plans only direct requirements", func(t *testing.T) {
+		adapter := fakeModuleSelectionAdapter(now, versions, releases)
+
+		plan := adapter.PlanTarget(context.Background(), target(dir, config.Policy{Pins: map[string]string{}}))
+		if plan.Error != "" {
+			t.Fatalf("plan error = %s", plan.Error)
+		}
+		if got := planModulePaths(plan); len(got) != 1 || got[0] != "example.com/direct" {
+			t.Fatalf("planned modules = %+v, want direct module only", got)
+		}
+		if got := adapter.versionLookups; len(got) != 1 || got[0] != "example.com/direct" {
+			t.Fatalf("version lookups = %+v, want no indirect lookup", got)
+		}
+	})
+
+	t.Run("explicit false plans only direct requirements", func(t *testing.T) {
+		adapter := fakeModuleSelectionAdapter(now, versions, releases)
+		target := target(dir, config.Policy{Pins: map[string]string{}})
+		target.IncludeIndirect = false
+
+		plan := adapter.PlanTarget(context.Background(), target)
+		if plan.Error != "" {
+			t.Fatalf("plan error = %s", plan.Error)
+		}
+		if got := planModulePaths(plan); len(got) != 1 || got[0] != "example.com/direct" {
+			t.Fatalf("planned modules = %+v, want direct module only", got)
+		}
+		if got := adapter.versionLookups; len(got) != 1 || got[0] != "example.com/direct" {
+			t.Fatalf("version lookups = %+v, want no indirect lookup", got)
+		}
+	})
+
+	t.Run("true plans direct and explicitly listed indirect requirements", func(t *testing.T) {
+		adapter := fakeModuleSelectionAdapter(now, versions, releases)
+
+		plan := adapter.PlanTarget(context.Background(), targetIncludingIndirect(dir, config.Policy{Pins: map[string]string{}}))
+		if plan.Error != "" {
+			t.Fatalf("plan error = %s", plan.Error)
+		}
+		if got := planModulePaths(plan); len(got) != 2 || got[0] != "example.com/direct" || got[1] != "example.com/indirect" {
+			t.Fatalf("planned modules = %+v, want direct and indirect modules sorted by path", got)
+		}
+		if got := plan.Decisions[0]; got.Relationship != core.RelationshipDirect || got.CandidateVersion != "v1.2.0" {
+			t.Fatalf("direct decision = %+v, want direct v1.2.0", got)
+		}
+		if got := plan.Decisions[1]; got.Relationship != core.RelationshipIndirect || got.CandidateVersion != "v1.3.0" {
+			t.Fatalf("indirect decision = %+v, want indirect v1.3.0", got)
+		}
+		if got := adapter.versionLookups; len(got) != 2 || got[0] != "example.com/direct" || got[1] != "example.com/indirect" {
+			t.Fatalf("version lookups = %+v, want sorted direct and indirect lookups", got)
+		}
+	})
+}
+
+func TestPlanTargetIndirectRequirementsUseCandidateSelectionRules(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	quarantineDays := 7
+	dir := indirectOnlyModuleDir(t, "example.com/indirect", "v1.0.0", "")
+	adapter := fakeModuleSelectionAdapter(now, map[string][]string{
+		"example.com/indirect": {"v1.0.0", "v1.1.0", "v1.2.0-rc.1", "v1.2.0"},
+	}, map[string]candidate{
+		"v1.2.0": trustedRelease(now.Add(-24 * time.Hour)),
+		"v1.1.0": trustedRelease(now.Add(-10 * 24 * time.Hour)),
+	})
+
+	plan := adapter.PlanTarget(context.Background(), targetIncludingIndirect(dir, config.Policy{QuarantineDays: &quarantineDays, Pins: map[string]string{}}))
+	decision := onlyDecision(t, plan)
+	if decision.Relationship != core.RelationshipIndirect {
+		t.Fatalf("relationship = %s, want indirect", decision.Relationship)
+	}
+	if !decision.Eligible || decision.CandidateVersion != "v1.1.0" {
+		t.Fatalf("decision = %+v, want stable non-quarantined fallback v1.1.0", decision)
+	}
+}
+
+func TestPlanTargetPolicyAndReplacementApplyToIndirectRequirements(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	releases := map[string]candidate{
+		"v1.1.0": trustedRelease(now.Add(-24 * time.Hour)),
+	}
+	versions := map[string][]string{
+		"example.com/indirect": {"v1.0.0", "v1.1.0"},
+	}
+
+	cases := []struct {
+		name   string
+		policy config.Policy
+		reason core.Reason
+	}{
+		{
+			name:   "pinned",
+			policy: config.Policy{Pins: map[string]string{"example.com/indirect": "v1.0.0"}},
+			reason: core.ReasonPinned,
+		},
+		{
+			name:   "pin mismatch",
+			policy: config.Policy{Pins: map[string]string{"example.com/indirect": "v1.0.1"}},
+			reason: core.ReasonPinMismatch,
+		},
+		{
+			name:   "denied",
+			policy: config.Policy{Deny: []string{"example.com/indirect"}, Pins: map[string]string{}},
+			reason: core.ReasonDenied,
+		},
+		{
+			name:   "not allowed",
+			policy: config.Policy{AllowSet: true, Allow: []string{"example.com/direct"}, Pins: map[string]string{}},
+			reason: core.ReasonNotAllowed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := indirectOnlyModuleDir(t, "example.com/indirect", "v1.0.0", "")
+			adapter := fakeModuleSelectionAdapter(now, versions, releases)
+
+			plan := adapter.PlanTarget(context.Background(), targetIncludingIndirect(dir, tc.policy))
+			decision := onlyDecision(t, plan)
+			if decision.Relationship != core.RelationshipIndirect {
+				t.Fatalf("relationship = %s, want indirect; decision=%+v", decision.Relationship, decision)
+			}
+			if decision.BlockedReason != tc.reason {
+				t.Fatalf("blocked reason = %s, want %s; decision=%+v", decision.BlockedReason, tc.reason, decision)
+			}
+		})
+	}
+
+	t.Run("replaced", func(t *testing.T) {
+		dir := indirectOnlyModuleDir(t, "example.com/indirect", "v1.0.0", "\nreplace example.com/indirect => ../indirect\n")
+		adapter := fakeModuleSelectionAdapter(now, versions, releases)
+
+		plan := adapter.PlanTarget(context.Background(), targetIncludingIndirect(dir, config.Policy{Pins: map[string]string{}}))
+		decision := onlyDecision(t, plan)
+		if decision.Relationship != core.RelationshipIndirect || decision.BlockedReason != core.ReasonReplacedDependency {
+			t.Fatalf("decision = %+v, want replaced indirect decision", decision)
+		}
+		if len(adapter.versionLookups) != 0 {
+			t.Fatalf("version lookups = %+v, replaced dependency should be blocked before candidate resolution", adapter.versionLookups)
+		}
+	})
+}
+
+func TestModuleStateRequirementsDirectRelationshipIsAuthoritative(t *testing.T) {
+	state := moduleState{
+		Direct:   map[string]string{"example.com/lib": "v1.1.0"},
+		Indirect: map[string]string{"example.com/lib": "v1.0.0"},
+	}
+
+	requirements := state.Requirements(true)
+	if len(requirements) != 1 {
+		t.Fatalf("requirements = %+v, want one direct requirement", requirements)
+	}
+	if got := requirements[0]; got.Relationship != core.RelationshipDirect || got.Version != "v1.1.0" {
+		t.Fatalf("requirement = %+v, want direct relationship to be authoritative", got)
+	}
+}
+
 func TestPlanTargetVersionResolutionFailures(t *testing.T) {
 	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
 
 	t.Run("invalid current version", func(t *testing.T) {
 		adapter := fakeSelectionAdapter(now, nil, nil)
 
-		decision, show := adapter.selectDecision(context.Background(), target(t.TempDir(), config.Policy{Pins: map[string]string{}}), "example.com/lib", "not-a-version", now)
+		decision, show := adapter.selectDecision(context.Background(), target(t.TempDir(), config.Policy{Pins: map[string]string{}}), requirement("example.com/lib", "not-a-version", core.RelationshipDirect), now)
 		if !show {
 			t.Fatal("show = false, want candidate resolution failure")
 		}
@@ -295,6 +464,33 @@ require `+modulePath+` `+version+`
 	return dir
 }
 
+func mixedRequirementModuleDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeGoMod(t, dir, `module example.com/app
+
+go 1.25.0
+
+require (
+	example.com/indirect v1.0.0 // indirect
+	example.com/direct v1.0.0
+)
+`)
+	return dir
+}
+
+func indirectOnlyModuleDir(t *testing.T, modulePath string, version string, extra string) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeGoMod(t, dir, `module example.com/app
+
+go 1.25.0
+
+require `+modulePath+` `+version+` // indirect
+`+extra)
+	return dir
+}
+
 func target(dir string, policy config.Policy) config.Target {
 	return config.Target{
 		Name:           "app",
@@ -303,6 +499,50 @@ func target(dir string, policy config.Policy) config.Target {
 		AbsPath:        dir,
 		Policy:         policy,
 	}
+}
+
+func targetIncludingIndirect(dir string, policy config.Policy) config.Target {
+	target := target(dir, policy)
+	target.IncludeIndirect = true
+	return target
+}
+
+func requirement(modulePath string, version string, relationship core.DependencyRelationship) dependencyRequirement {
+	return dependencyRequirement{Path: modulePath, Version: version, Relationship: relationship}
+}
+
+type moduleSelectionAdapter struct {
+	*Adapter
+	versionLookups []string
+	releaseLookups []string
+}
+
+func fakeModuleSelectionAdapter(now time.Time, versions map[string][]string, releases map[string]candidate) *moduleSelectionAdapter {
+	fake := &moduleSelectionAdapter{}
+	fake.Adapter = &Adapter{
+		Now: func() time.Time {
+			return now
+		},
+		listVersions: func(_ context.Context, _ string, modulePath string) ([]string, error) {
+			fake.versionLookups = append(fake.versionLookups, modulePath)
+			moduleVersions, ok := versions[modulePath]
+			if !ok {
+				return nil, errors.New("unexpected version lookup for " + modulePath)
+			}
+			return moduleVersions, nil
+		},
+		releaseLookup: func(_ context.Context, _ string, modulePath string, version string) candidate {
+			fake.releaseLookups = append(fake.releaseLookups, modulePath+"@"+version)
+			if release, ok := releases[version]; ok {
+				if release.Version == "" {
+					release.Version = version
+				}
+				return release
+			}
+			return candidate{Version: version}
+		},
+	}
+	return fake
 }
 
 func fakeSelectionAdapter(now time.Time, versions []string, releases map[string]candidate) *Adapter {
@@ -342,6 +582,14 @@ func onlyDecision(t *testing.T, plan core.TargetPlan) core.Decision {
 		t.Fatalf("decisions = %+v, want exactly one", plan.Decisions)
 	}
 	return plan.Decisions[0]
+}
+
+func planModulePaths(plan core.TargetPlan) []string {
+	paths := make([]string, 0, len(plan.Decisions))
+	for _, decision := range plan.Decisions {
+		paths = append(paths, decision.ModulePath)
+	}
+	return paths
 }
 
 func writeGoMod(t *testing.T, dir string, content string) {

@@ -47,6 +47,133 @@ func TestDetectQuarantinedBlockedDecisionShowsReleaseDate(t *testing.T) {
 	}
 }
 
+func TestDetectDirectOutputContractStaysUnchanged(t *testing.T) {
+	result := core.RunResult{
+		Mode: "detect",
+		Targets: []core.TargetResult{
+			{
+				Target: config.Target{
+					Name:           "app",
+					NormalizedPath: ".",
+				},
+				Plan: core.TargetPlan{
+					Decisions: []core.Decision{
+						{
+							ModulePath:       "github.com/a/direct",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Eligible:         true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	Detect(&out, result)
+	want := `Target app (.)
+Eligible:
+  - github.com/a/direct v1.0.0 -> v1.1.0
+Summary: eligible=1 blocked=0 applied=0 errors=0
+
+Total: targets=1 eligible=1 blocked=0 applied=0 errors=0
+`
+	if got := out.String(); got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDetectLabelsIndirectDecisions(t *testing.T) {
+	result := core.RunResult{
+		Mode: "detect",
+		Targets: []core.TargetResult{
+			{
+				Target: config.Target{
+					Name:           "app",
+					NormalizedPath: ".",
+				},
+				Plan: core.TargetPlan{
+					Decisions: []core.Decision{
+						{
+							ModulePath:       "github.com/a/direct",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Relationship:     core.RelationshipDirect,
+							Eligible:         true,
+						},
+						{
+							ModulePath:       "github.com/a/indirect",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Relationship:     core.RelationshipIndirect,
+							Eligible:         true,
+						},
+						{
+							ModulePath:       "github.com/a/blocked",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Relationship:     core.RelationshipIndirect,
+							BlockedReason:    core.ReasonDenied,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	Detect(&out, result)
+	want := `Target app (.)
+Eligible:
+  - github.com/a/direct v1.0.0 -> v1.1.0
+  - github.com/a/indirect (indirect) v1.0.0 -> v1.1.0
+Blocked:
+  - github.com/a/blocked (indirect) v1.0.0 -> v1.1.0: denied
+Summary: eligible=2 blocked=1 applied=0 errors=0
+
+Total: targets=1 eligible=2 blocked=1 applied=0 errors=0
+`
+	if got := out.String(); got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyLabelsIndirectAppliedUpdates(t *testing.T) {
+	result := core.RunResult{
+		Mode: "apply",
+		Targets: []core.TargetResult{
+			{
+				Target: config.Target{
+					Name:           "app",
+					NormalizedPath: ".",
+				},
+				Applied: []core.AppliedUpdate{
+					{
+						ModulePath:   "github.com/a/indirect",
+						FromVersion:  "v1.0.0",
+						ToVersion:    "v1.1.0",
+						Relationship: core.RelationshipIndirect,
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	Apply(&out, result)
+	want := `Target app (.)
+Applied:
+  - github.com/a/indirect (indirect) v1.0.0 -> v1.1.0
+Summary: eligible=0 blocked=0 applied=1 errors=0
+
+Total: targets=1 eligible=0 blocked=0 applied=1 errors=0
+`
+	if got := out.String(); got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func runResultWithDecision(decision core.Decision) core.RunResult {
 	return core.RunResult{
 		Mode: "detect",

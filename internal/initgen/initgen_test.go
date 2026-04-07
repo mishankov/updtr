@@ -48,6 +48,9 @@ func TestRunCreatesConfigAndNoopsWhenExistsOrNoModules(t *testing.T) {
 	if !strings.Contains(string(data), "quarantine_days = 7") || !strings.Contains(string(data), `path = "."`) {
 		t.Fatalf("generated config:\n%s", data)
 	}
+	if strings.Contains(string(data), "include_indirect") {
+		t.Fatalf("generated config should stay direct-only by omitting include_indirect:\n%s", data)
+	}
 
 	message, err = Run(root)
 	if err != nil {

@@ -26,13 +26,14 @@ type rawPolicy struct {
 }
 
 type rawTarget struct {
-	Name           string            `toml:"name"`
-	Ecosystem      string            `toml:"ecosystem"`
-	Path           string            `toml:"path"`
-	QuarantineDays *int              `toml:"quarantine_days"`
-	Allow          *[]string         `toml:"allow"`
-	Deny           *[]string         `toml:"deny"`
-	Pin            map[string]string `toml:"pin"`
+	Name            string            `toml:"name"`
+	Ecosystem       string            `toml:"ecosystem"`
+	Path            string            `toml:"path"`
+	IncludeIndirect bool              `toml:"include_indirect"`
+	QuarantineDays  *int              `toml:"quarantine_days"`
+	Allow           *[]string         `toml:"allow"`
+	Deny            *[]string         `toml:"deny"`
+	Pin             map[string]string `toml:"pin"`
 }
 
 type Config struct {
@@ -42,12 +43,13 @@ type Config struct {
 }
 
 type Target struct {
-	Name           string
-	Ecosystem      string
-	Path           string
-	NormalizedPath string
-	AbsPath        string
-	Policy         Policy
+	Name            string
+	Ecosystem       string
+	Path            string
+	NormalizedPath  string
+	AbsPath         string
+	IncludeIndirect bool
+	Policy          Policy
 }
 
 type Policy struct {
@@ -137,12 +139,13 @@ func validateAndResolve(raw *rawConfig, cfg *Config) error {
 			return err
 		}
 		cfg.Targets = append(cfg.Targets, Target{
-			Name:           target.Name,
-			Ecosystem:      target.Ecosystem,
-			Path:           target.Path,
-			NormalizedPath: normalized,
-			AbsPath:        filepath.Join(cfg.BaseDir, filepath.FromSlash(normalized)),
-			Policy:         targetPolicy,
+			Name:            target.Name,
+			Ecosystem:       target.Ecosystem,
+			Path:            target.Path,
+			NormalizedPath:  normalized,
+			AbsPath:         filepath.Join(cfg.BaseDir, filepath.FromSlash(normalized)),
+			IncludeIndirect: target.IncludeIndirect,
+			Policy:          targetPolicy,
 		})
 	}
 	return nil

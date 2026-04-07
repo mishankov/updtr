@@ -72,6 +72,7 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 				ModulePath:    decision.ModulePath,
 				FromVersion:   decision.CurrentVersion,
 				ToVersion:     decision.CandidateVersion,
+				Relationship:  decision.Relationship,
 				CommandOutput: output,
 			})
 		}
