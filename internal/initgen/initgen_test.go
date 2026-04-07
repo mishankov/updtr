@@ -38,15 +38,18 @@ func TestRunCreatesConfigAndNoopsWhenExistsOrNoModules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message != "created updtr.toml with 1 go targets\n" {
+	if message != "created updtr.yaml with 1 go targets\n" {
 		t.Fatalf("message = %q", message)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "updtr.toml"))
+	data, err := os.ReadFile(filepath.Join(root, "updtr.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "quarantine_days = 7") || !strings.Contains(string(data), `path = "."`) {
+	if !strings.Contains(string(data), "policy:\n  quarantine_days: 7") || !strings.Contains(string(data), `    path: "."`) {
 		t.Fatalf("generated config:\n%s", data)
+	}
+	if !strings.Contains(string(data), "targets:\n  - name: \"root\"\n    ecosystem: \"go\"") {
+		t.Fatalf("generated config missing root target:\n%s", data)
 	}
 	if strings.Contains(string(data), "include_indirect") {
 		t.Fatalf("generated config should stay direct-only by omitting include_indirect:\n%s", data)
@@ -56,7 +59,7 @@ func TestRunCreatesConfigAndNoopsWhenExistsOrNoModules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message != "updtr.toml already exists; nothing to do\n" {
+	if message != "updtr.yaml already exists; nothing to do\n" {
 		t.Fatalf("existing message = %q", message)
 	}
 
@@ -67,6 +70,25 @@ func TestRunCreatesConfigAndNoopsWhenExistsOrNoModules(t *testing.T) {
 	}
 	if message != "no go modules found; nothing to do\n" {
 		t.Fatalf("empty message = %q", message)
+	}
+}
+
+func TestRunNoopsWhenYMLConfigExists(t *testing.T) {
+	root := t.TempDir()
+	touch(t, filepath.Join(root, "go.mod"))
+	if err := os.WriteFile(filepath.Join(root, "updtr.yml"), []byte("targets: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := Run(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "updtr.yml already exists; nothing to do\n" {
+		t.Fatalf("message = %q", message)
+	}
+	if _, err := os.Stat(filepath.Join(root, "updtr.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("updtr.yaml stat err = %v, want no generated file", err)
 	}
 }
 

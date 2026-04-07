@@ -14,11 +14,13 @@ import (
 var unsafeNameChars = regexp.MustCompile(`[^a-z0-9]+`)
 
 func Run(cwd string) (string, error) {
-	configPath := filepath.Join(cwd, "updtr.toml")
-	if _, err := os.Stat(configPath); err == nil {
-		return "updtr.toml already exists; nothing to do\n", nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("check updtr.toml: %w", err)
+	for _, name := range []string{"updtr.yaml", "updtr.yml"} {
+		configPath := filepath.Join(cwd, name)
+		if _, err := os.Stat(configPath); err == nil {
+			return fmt.Sprintf("%s already exists; nothing to do\n", name), nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("check %s: %w", name, err)
+		}
 	}
 
 	targets, err := Discover(cwd)
@@ -29,10 +31,11 @@ func Run(cwd string) (string, error) {
 		return "no go modules found; nothing to do\n", nil
 	}
 	data := RenderConfig(targets)
+	configPath := filepath.Join(cwd, "updtr.yaml")
 	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return "", fmt.Errorf("write updtr.toml: %w", err)
+		return "", fmt.Errorf("write updtr.yaml: %w", err)
 	}
-	return fmt.Sprintf("created updtr.toml with %d go targets\n", len(targets)), nil
+	return fmt.Sprintf("created updtr.yaml with %d go targets\n", len(targets)), nil
 }
 
 type Target struct {
@@ -92,16 +95,13 @@ func Discover(root string) ([]Target, error) {
 
 func RenderConfig(targets []Target) []byte {
 	var buf bytes.Buffer
-	buf.WriteString("[policy]\n")
-	buf.WriteString("quarantine_days = 7\n\n")
-	for i, target := range targets {
-		if i > 0 {
-			buf.WriteString("\n")
-		}
-		buf.WriteString("[[targets]]\n")
-		fmt.Fprintf(&buf, "name = %q\n", target.Name)
-		buf.WriteString("ecosystem = \"go\"\n")
-		fmt.Fprintf(&buf, "path = %q\n", target.Path)
+	buf.WriteString("policy:\n")
+	buf.WriteString("  quarantine_days: 7\n")
+	buf.WriteString("targets:\n")
+	for _, target := range targets {
+		fmt.Fprintf(&buf, "  - name: %q\n", target.Name)
+		buf.WriteString("    ecosystem: \"go\"\n")
+		fmt.Fprintf(&buf, "    path: %q\n", target.Path)
 	}
 	return buf.Bytes()
 }

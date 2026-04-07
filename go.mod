@@ -3,8 +3,8 @@ module github.com/mishankov/updtr
 go 1.23.0
 
 require (
-	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/spf13/cobra v1.10.2
+	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/mod v0.24.0
 	golang.org/x/vuln v1.1.4
 )

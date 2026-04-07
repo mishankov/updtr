@@ -31,7 +31,7 @@ func New(version string, out io.Writer, errOut io.Writer) *cobra.Command {
 	}
 	root.SetOut(out)
 	root.SetErr(errOut)
-	root.PersistentFlags().StringVar(&configPath, "config", "updtr.toml", "path to config file")
+	root.PersistentFlags().StringVar(&configPath, "config", "updtr.yaml", "path to YAML config file")
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -43,7 +43,7 @@ func New(version string, out io.Writer, errOut io.Writer) *cobra.Command {
 
 	root.AddCommand(&cobra.Command{
 		Use:   "init",
-		Short: "Create updtr.toml from discovered Go modules",
+		Short: "Create updtr.yaml from discovered Go modules",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -85,7 +85,7 @@ func runCommand(use string, short string, out io.Writer, run func(*orchestrator.
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(*configPath)
+			cfg, err := config.Load(loadPath(cmd, *configPath))
 			if err != nil {
 				return err
 			}
@@ -101,4 +101,11 @@ func runCommand(use string, short string, out io.Writer, run func(*orchestrator.
 	}
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "target name to run; repeatable")
 	return cmd
+}
+
+func loadPath(cmd *cobra.Command, configured string) string {
+	if flag := cmd.Flag("config"); flag != nil && flag.Changed {
+		return configured
+	}
+	return ""
 }

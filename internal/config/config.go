@@ -3,39 +3,45 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/pelletier/go-toml/v2"
+	"go.yaml.in/yaml/v3"
 )
 
 var targetNamePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+const (
+	defaultConfigPath         = "updtr.yaml"
+	defaultConfigFallbackPath = "updtr.yml"
+)
+
 type rawConfig struct {
-	Policy  *rawPolicy  `toml:"policy"`
-	Targets []rawTarget `toml:"targets"`
+	Policy  *rawPolicy  `yaml:"policy"`
+	Targets []rawTarget `yaml:"targets"`
 }
 
 type rawPolicy struct {
-	QuarantineDays *int              `toml:"quarantine_days"`
-	UpdateMode     *string           `toml:"update_mode"`
-	Allow          *[]string         `toml:"allow"`
-	Deny           *[]string         `toml:"deny"`
-	Pin            map[string]string `toml:"pin"`
+	QuarantineDays *int              `yaml:"quarantine_days"`
+	UpdateMode     *string           `yaml:"update_mode"`
+	Allow          *[]string         `yaml:"allow"`
+	Deny           *[]string         `yaml:"deny"`
+	Pin            map[string]string `yaml:"pin"`
 }
 
 type rawTarget struct {
-	Name            string            `toml:"name"`
-	Ecosystem       string            `toml:"ecosystem"`
-	Path            string            `toml:"path"`
-	IncludeIndirect bool              `toml:"include_indirect"`
-	QuarantineDays  *int              `toml:"quarantine_days"`
-	UpdateMode      *string           `toml:"update_mode"`
-	Allow           *[]string         `toml:"allow"`
-	Deny            *[]string         `toml:"deny"`
-	Pin             map[string]string `toml:"pin"`
+	Name            string            `yaml:"name"`
+	Ecosystem       string            `yaml:"ecosystem"`
+	Path            string            `yaml:"path"`
+	IncludeIndirect bool              `yaml:"include_indirect"`
+	QuarantineDays  *int              `yaml:"quarantine_days"`
+	UpdateMode      *string           `yaml:"update_mode"`
+	Allow           *[]string         `yaml:"allow"`
+	Deny            *[]string         `yaml:"deny"`
+	Pin             map[string]string `yaml:"pin"`
 }
 
 type Config struct {
@@ -72,31 +78,68 @@ const (
 )
 
 func Load(path string) (*Config, error) {
-	if path == "" {
-		path = "updtr.toml"
-	}
-	file, err := os.Open(path)
+	resolvedPath, err := configPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("load config %s: %w", path, err)
+		return nil, err
+	}
+	file, err := os.Open(resolvedPath)
+	if err != nil {
+		return nil, fmt.Errorf("load config %s: %w", resolvedPath, err)
 	}
 	defer file.Close()
 
 	var raw rawConfig
-	decoder := toml.NewDecoder(file)
-	decoder.DisallowUnknownFields()
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
+		return nil, fmt.Errorf("parse config %s: %w", resolvedPath, err)
+	}
+	var extra rawConfig
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", resolvedPath, err)
+		}
+		return nil, fmt.Errorf("parse config %s: multiple YAML documents are not supported", resolvedPath)
 	}
 
-	absConfig, err := filepath.Abs(path)
+	absConfig, err := filepath.Abs(resolvedPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve config path %s: %w", path, err)
+		return nil, fmt.Errorf("resolve config path %s: %w", resolvedPath, err)
 	}
 	cfg := &Config{Path: absConfig, BaseDir: filepath.Dir(absConfig)}
 	if err := validateAndResolve(&raw, cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func configPath(path string) (string, error) {
+	if path == "" {
+		if _, err := os.Stat(defaultConfigPath); err == nil {
+			return defaultConfigPath, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("check config %s: %w", defaultConfigPath, err)
+		}
+		if _, err := os.Stat(defaultConfigFallbackPath); err == nil {
+			return defaultConfigFallbackPath, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("check config %s: %w", defaultConfigFallbackPath, err)
+		}
+		return defaultConfigPath, nil
+	}
+	if !isSupportedConfigPath(path) {
+		return "", errors.New("unsupported config extension: accepted extensions are .yaml and .yml")
+	}
+	return path, nil
+}
+
+func isSupportedConfigPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateAndResolve(raw *rawConfig, cfg *Config) error {
