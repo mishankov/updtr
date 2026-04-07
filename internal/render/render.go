@@ -3,6 +3,8 @@ package render
 import (
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/mishankov/updtr/internal/core"
@@ -27,7 +29,7 @@ func render(out io.Writer, result core.RunResult, apply bool) {
 		if len(target.Applied) > 0 {
 			_, _ = fmt.Fprintln(out, "Applied:")
 			for _, update := range target.Applied {
-				_, _ = fmt.Fprintf(out, "  - %s %s -> %s\n", moduleWithRelationship(update.ModulePath, update.Relationship), update.FromVersion, update.ToVersion)
+				_, _ = fmt.Fprintf(out, "  - %s %s -> %s%s\n", moduleWithRelationship(update.ModulePath, update.Relationship), update.FromVersion, update.ToVersion, vulnerabilitySuffix(update.Vulnerabilities))
 			}
 		}
 
@@ -35,7 +37,7 @@ func render(out io.Writer, result core.RunResult, apply bool) {
 		if !apply && len(eligible) > 0 {
 			_, _ = fmt.Fprintln(out, "Eligible:")
 			for _, decision := range eligible {
-				_, _ = fmt.Fprintf(out, "  - %s %s -> %s%s\n", moduleWithRelationship(decision.ModulePath, decision.Relationship), decision.CurrentVersion, decision.CandidateVersion, releaseSuffix(decision))
+				_, _ = fmt.Fprintf(out, "  - %s %s -> %s%s%s\n", moduleWithRelationship(decision.ModulePath, decision.Relationship), decision.CurrentVersion, decision.CandidateVersion, releaseSuffix(decision), vulnerabilitySuffix(decision.Vulnerabilities))
 			}
 		}
 		if len(blocked) > 0 {
@@ -111,6 +113,7 @@ func blockedSuffix(decision core.Decision) string {
 		suffix += releaseSuffix(decision)
 	}
 	suffix += messageSuffix(decision)
+	suffix += vulnerabilitySuffix(decision.Vulnerabilities)
 	return suffix
 }
 
@@ -126,4 +129,34 @@ func moduleWithRelationship(modulePath string, relationship core.DependencyRelat
 		return modulePath + " (indirect)"
 	}
 	return modulePath
+}
+
+func vulnerabilitySuffix(vulnerabilities []core.Vulnerability) string {
+	if len(vulnerabilities) == 0 {
+		return ""
+	}
+	advisories := advisoryIDs(vulnerabilities)
+	if len(advisories) == 0 {
+		return " (vulnerabilities: known)"
+	}
+	return " (vulnerabilities: " + strings.Join(advisories, ", ") + ")"
+}
+
+func advisoryIDs(vulnerabilities []core.Vulnerability) []string {
+	seen := map[string]struct{}{}
+	var advisories []string
+	for _, vulnerability := range vulnerabilities {
+		for _, advisory := range vulnerability.AdvisoryIDs {
+			if advisory == "" {
+				continue
+			}
+			if _, ok := seen[advisory]; ok {
+				continue
+			}
+			seen[advisory] = struct{}{}
+			advisories = append(advisories, advisory)
+		}
+	}
+	sort.Strings(advisories)
+	return advisories
 }

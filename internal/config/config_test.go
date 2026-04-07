@@ -88,6 +88,56 @@ include_indirect = true
 	}
 }
 
+func TestLoadUpdateModeInheritanceAndTargetOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "updtr.toml")
+	writeConfig(t, path, `
+[policy]
+update_mode = "vulnerability_only"
+
+[[targets]]
+name = "inherited"
+ecosystem = "go"
+path = "."
+
+[[targets]]
+name = "normal"
+ecosystem = "go"
+path = "./normal"
+update_mode = "normal"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Targets[0].Policy.UpdateMode; got != UpdateModeVulnerabilityOnly {
+		t.Fatalf("inherited update mode = %s, want vulnerability_only", got)
+	}
+	if got := cfg.Targets[1].Policy.UpdateMode; got != UpdateModeNormal {
+		t.Fatalf("target update mode = %s, want normal", got)
+	}
+}
+
+func TestLoadDefaultUpdateModeNormal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "updtr.toml")
+	writeConfig(t, path, `
+[[targets]]
+name = "root"
+ecosystem = "go"
+path = "."
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Targets[0].Policy.UpdateMode; got != UpdateModeNormal {
+		t.Fatalf("update mode = %s, want normal", got)
+	}
+}
+
 func TestLoadRejectsInvalidConfig(t *testing.T) {
 	cases := map[string]string{
 		"unknown key": `
@@ -135,6 +185,21 @@ quarantine_days = -1
 name = "root"
 ecosystem = "go"
 path = "."
+`,
+		"invalid global update mode": `
+[policy]
+update_mode = "security"
+[[targets]]
+name = "root"
+ecosystem = "go"
+path = "."
+`,
+		"invalid target update mode": `
+[[targets]]
+name = "root"
+ecosystem = "go"
+path = "."
+update_mode = "security"
 `,
 	}
 	for name, body := range cases {

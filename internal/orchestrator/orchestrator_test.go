@@ -17,7 +17,10 @@ func TestApplyPassesSelectedPlanCandidateToAdapter(t *testing.T) {
 					CurrentVersion:   "v1.37.0",
 					CandidateVersion: "v1.48.0",
 					Relationship:     core.RelationshipIndirect,
-					Eligible:         true,
+					Vulnerabilities: []core.Vulnerability{
+						{ModulePath: "example.com/lib", AffectedVersion: "v1.37.0", FixedVersions: []string{"v1.48.0"}, AdvisoryIDs: []string{"GO-2026-0001"}},
+					},
+					Eligible: true,
 				},
 				{
 					ModulePath:       "example.com/blocked",
@@ -57,6 +60,9 @@ func TestApplyPassesSelectedPlanCandidateToAdapter(t *testing.T) {
 	}
 	if got := result.Targets[0].Applied[0].Relationship; got != core.RelationshipIndirect {
 		t.Fatalf("applied relationship = %s, want indirect", got)
+	}
+	if got := result.Targets[0].Applied[0].Vulnerabilities; len(got) != 1 || got[0].AdvisoryIDs[0] != "GO-2026-0001" {
+		t.Fatalf("applied vulnerabilities = %+v, want selected plan vulnerability context", got)
 	}
 }
 

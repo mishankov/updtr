@@ -20,13 +20,14 @@ import (
 )
 
 type Adapter struct {
-	Now           func() time.Time
-	listVersions  func(context.Context, string, string) ([]string, error)
-	releaseLookup func(context.Context, string, string, string) candidate
+	Now                  func() time.Time
+	listVersions         func(context.Context, string, string) ([]string, error)
+	releaseLookup        func(context.Context, string, string, string) candidate
+	vulnerabilityScanner VulnerabilityScanner
 }
 
 func New() *Adapter {
-	return &Adapter{Now: time.Now}
+	return &Adapter{Now: time.Now, vulnerabilityScanner: GovulncheckScanner{}}
 }
 
 func (a *Adapter) CheckPrereq() error {
@@ -49,19 +50,46 @@ func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.Tar
 		return plan
 	}
 
+	vulnerabilities := []core.Vulnerability(nil)
+	if target.Policy.UpdateMode == config.UpdateModeVulnerabilityOnly {
+		scanner := a.scanner()
+		vulnerabilities, err = scanner.Scan(ctx, target)
+		if err != nil {
+			plan.Error = err.Error()
+			return plan
+		}
+	}
+
 	now := a.now()
 	for _, requirement := range state.Requirements(target.IncludeIndirect) {
-		if state.Replaced.Contains(requirement.Path, requirement.Version) {
-			plan.Decisions = append(plan.Decisions, core.Decision{
-				ModulePath:     requirement.Path,
-				CurrentVersion: requirement.Version,
-				Relationship:   requirement.Relationship,
-				BlockedReason:  core.ReasonReplacedDependency,
-			})
+		relevantVulnerabilities := relevantVulnerabilitiesForRequirement(vulnerabilities, requirement)
+		if target.Policy.UpdateMode == config.UpdateModeVulnerabilityOnly && len(relevantVulnerabilities) == 0 {
 			continue
 		}
 
-		if decision, show := a.selectDecision(ctx, target, requirement, now); show {
+		if state.Replaced.Contains(requirement.Path, requirement.Version) {
+			decision := core.Decision{
+				ModulePath:      requirement.Path,
+				CurrentVersion:  requirement.Version,
+				Relationship:    requirement.Relationship,
+				Vulnerabilities: relevantVulnerabilities,
+				BlockedReason:   core.ReasonReplacedDependency,
+			}
+			plan.Decisions = append(plan.Decisions, decision)
+			continue
+		}
+
+		var candidateFilter func(string) bool
+		if target.Policy.UpdateMode == config.UpdateModeVulnerabilityOnly {
+			candidateFilter = func(version string) bool {
+				return len(vulnerabilitiesFixedByCandidate(relevantVulnerabilities, version)) > 0
+			}
+		}
+
+		if decision, show := a.selectDecision(ctx, target, requirement, now, candidateFilter); show {
+			if target.Policy.UpdateMode == config.UpdateModeVulnerabilityOnly {
+				decision.Vulnerabilities = relevantVulnerabilitiesForDecision(relevantVulnerabilities, decision)
+			}
 			plan.Decisions = append(plan.Decisions, decision)
 		}
 	}
@@ -89,6 +117,13 @@ func (a *Adapter) now() time.Time {
 		return time.Now()
 	}
 	return a.Now()
+}
+
+func (a *Adapter) scanner() VulnerabilityScanner {
+	if a.vulnerabilityScanner != nil {
+		return a.vulnerabilityScanner
+	}
+	return GovulncheckScanner{}
 }
 
 type moduleState struct {
@@ -211,7 +246,7 @@ type moduleInfo struct {
 	Time    *time.Time `json:"Time"`
 }
 
-func (a *Adapter) selectDecision(ctx context.Context, target config.Target, requirement dependencyRequirement, now time.Time) (core.Decision, bool) {
+func (a *Adapter) selectDecision(ctx context.Context, target config.Target, requirement dependencyRequirement, now time.Time, candidateFilter func(string) bool) (core.Decision, bool) {
 	input := policy.Input{
 		ModulePath:     requirement.Path,
 		CurrentVersion: requirement.Version,
@@ -231,11 +266,20 @@ func (a *Adapter) selectDecision(ctx context.Context, target config.Target, requ
 
 	candidates := selectCandidates(requirement.Version, versions)
 	if len(candidates) == 0 {
+		if candidateFilter != nil {
+			return core.Decision{}, false
+		}
 		return policy.Decide(target.Policy, input, now)
 	}
 
 	var firstBlocked *core.Decision
+	filteredCandidates := 0
 	for _, version := range candidates {
+		if candidateFilter != nil && !candidateFilter(version) {
+			continue
+		}
+		filteredCandidates++
+
 		candidate := a.candidateRelease(ctx, target.AbsPath, requirement.Path, version)
 		candidateInput := input
 		candidateInput.CandidateVersion = candidate.Version
@@ -261,6 +305,9 @@ func (a *Adapter) selectDecision(ctx context.Context, target config.Target, requ
 
 	if firstBlocked != nil {
 		return *firstBlocked, true
+	}
+	if candidateFilter != nil && filteredCandidates == 0 {
+		return core.Decision{}, false
 	}
 	return policy.Decide(target.Policy, input, now)
 }

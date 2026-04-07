@@ -69,11 +69,12 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 				break
 			}
 			targetResult.Applied = append(targetResult.Applied, core.AppliedUpdate{
-				ModulePath:    decision.ModulePath,
-				FromVersion:   decision.CurrentVersion,
-				ToVersion:     decision.CandidateVersion,
-				Relationship:  decision.Relationship,
-				CommandOutput: output,
+				ModulePath:      decision.ModulePath,
+				FromVersion:     decision.CurrentVersion,
+				ToVersion:       decision.CandidateVersion,
+				Relationship:    decision.Relationship,
+				Vulnerabilities: decision.Vulnerabilities,
+				CommandOutput:   output,
 			})
 		}
 

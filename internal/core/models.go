@@ -35,6 +35,7 @@ type Decision struct {
 	PinVersion       string
 	ReleaseTime      *time.Time
 	Relationship     DependencyRelationship
+	Vulnerabilities  []Vulnerability
 	Eligible         bool
 	BlockedReason    Reason
 	Message          string
@@ -51,11 +52,24 @@ type TargetPlan struct {
 }
 
 type AppliedUpdate struct {
-	ModulePath    string
-	FromVersion   string
-	ToVersion     string
-	Relationship  DependencyRelationship
-	CommandOutput string
+	ModulePath      string
+	FromVersion     string
+	ToVersion       string
+	Relationship    DependencyRelationship
+	Vulnerabilities []Vulnerability
+	CommandOutput   string
+}
+
+type Vulnerability struct {
+	ModulePath       string
+	AffectedVersion  string
+	FixedVersions    []string
+	AdvisoryIDs      []string
+	Relationship     DependencyRelationship
+	Severity         string
+	Reachability     string
+	Scanner          string
+	ScannerReference string
 }
 
 type TargetResult struct {

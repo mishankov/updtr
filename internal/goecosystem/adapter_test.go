@@ -362,6 +362,212 @@ func TestPlanTargetPolicyAndReplacementApplyToIndirectRequirements(t *testing.T)
 	})
 }
 
+func TestPlanTargetNormalModeDoesNotInvokeVulnerabilityScanner(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := moduleDir(t, "example.com/lib", "v1.0.0")
+	scanner := &fakeVulnerabilityScanner{err: errors.New("scanner should not run")}
+	adapter := fakeSelectionAdapter(now, []string{"v1.0.0", "v1.1.0"}, map[string]candidate{
+		"v1.1.0": trustedRelease(now.Add(-24 * time.Hour)),
+	})
+	adapter.vulnerabilityScanner = scanner
+
+	plan := adapter.PlanTarget(context.Background(), target(dir, config.Policy{Pins: map[string]string{}}))
+	if plan.Error != "" {
+		t.Fatalf("plan error = %s", plan.Error)
+	}
+	if scanner.calls != 0 {
+		t.Fatalf("scanner calls = %d, want 0", scanner.calls)
+	}
+	decision := onlyDecision(t, plan)
+	if !decision.Eligible || decision.CandidateVersion != "v1.1.0" {
+		t.Fatalf("decision = %+v, want normal eligible update", decision)
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyScannerFailureIsTargetFailure(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := moduleDir(t, "example.com/lib", "v1.0.0")
+	scanner := &fakeVulnerabilityScanner{err: errors.New("scan failed")}
+	adapter := fakeSelectionAdapter(now, []string{"v1.0.0", "v1.1.0"}, nil)
+	adapter.vulnerabilityScanner = scanner
+
+	plan := adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(config.Policy{Pins: map[string]string{}})))
+	if plan.Error != "scan failed" {
+		t.Fatalf("plan error = %q, want scanner failure", plan.Error)
+	}
+	if scanner.calls != 1 {
+		t.Fatalf("scanner calls = %d, want 1", scanner.calls)
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyDirectRemediation(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := moduleDir(t, "example.com/lib", "v1.0.0")
+	adapter := fakeSelectionAdapter(now, []string{"v1.0.0", "v1.1.0"}, map[string]candidate{
+		"v1.1.0": trustedRelease(now.Add(-24 * time.Hour)),
+	})
+	adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: []core.Vulnerability{
+		vulnerability("example.com/lib", "v1.0.0", "v1.1.0", "GO-2026-0001"),
+	}}
+
+	plan := adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(config.Policy{Pins: map[string]string{}})))
+	decision := onlyDecision(t, plan)
+	if !decision.Eligible || decision.CandidateVersion != "v1.1.0" {
+		t.Fatalf("decision = %+v, want vulnerable direct eligible v1.1.0", decision)
+	}
+	if len(decision.Vulnerabilities) != 1 || decision.Vulnerabilities[0].AdvisoryIDs[0] != "GO-2026-0001" {
+		t.Fatalf("vulnerabilities = %+v, want advisory context", decision.Vulnerabilities)
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyOmitsNonCurrentAndOutOfScopeFindings(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := moduleDir(t, "example.com/lib", "v1.0.0")
+	adapter := fakeModuleSelectionAdapter(now, map[string][]string{
+		"example.com/lib": {"v1.0.0", "v1.1.0"},
+	}, map[string]candidate{
+		"v1.1.0": trustedRelease(now.Add(-24 * time.Hour)),
+	})
+	adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: []core.Vulnerability{
+		vulnerability("example.com/lib", "v0.9.0", "v1.1.0", "GO-2026-0001"),
+		vulnerability("example.com/transitive", "v1.0.0", "v1.1.0", "GO-2026-0002"),
+	}}
+
+	plan := adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(config.Policy{Pins: map[string]string{}})))
+	if plan.Error != "" {
+		t.Fatalf("plan error = %s", plan.Error)
+	}
+	if len(plan.Decisions) != 0 {
+		t.Fatalf("decisions = %+v, want no in-scope remediation", plan.Decisions)
+	}
+	if len(adapter.versionLookups) != 0 {
+		t.Fatalf("version lookups = %+v, want no candidate lookup for out-of-scope findings", adapter.versionLookups)
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyRequiresFixingCandidate(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := moduleDir(t, "example.com/lib", "v1.0.0")
+	adapter := fakeSelectionAdapter(now, []string{"v1.0.0", "v1.1.0"}, map[string]candidate{
+		"v1.1.0": trustedRelease(now.Add(-24 * time.Hour)),
+	})
+	adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: []core.Vulnerability{
+		vulnerability("example.com/lib", "v1.0.0", "v1.2.0", "GO-2026-0001"),
+	}}
+
+	plan := adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(config.Policy{Pins: map[string]string{}})))
+	if plan.Error != "" {
+		t.Fatalf("plan error = %s", plan.Error)
+	}
+	if len(plan.Decisions) != 0 {
+		t.Fatalf("decisions = %+v, want no update because newer candidate does not fix", plan.Decisions)
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyKeepsPolicyBlockers(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	release := trustedRelease(now.Add(-24 * time.Hour))
+
+	cases := []struct {
+		name   string
+		policy config.Policy
+		reason core.Reason
+	}{
+		{
+			name:   "pinned",
+			policy: config.Policy{Pins: map[string]string{"example.com/lib": "v1.0.0"}},
+			reason: core.ReasonPinned,
+		},
+		{
+			name:   "denied",
+			policy: config.Policy{Deny: []string{"example.com/lib"}, Pins: map[string]string{}},
+			reason: core.ReasonDenied,
+		},
+		{
+			name:   "not allowed",
+			policy: config.Policy{AllowSet: true, Allow: []string{"example.com/other"}, Pins: map[string]string{}},
+			reason: core.ReasonNotAllowed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := moduleDir(t, "example.com/lib", "v1.0.0")
+			adapter := fakeSelectionAdapter(now, []string{"v1.0.0", "v1.1.0"}, map[string]candidate{"v1.1.0": release})
+			adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: []core.Vulnerability{
+				vulnerability("example.com/lib", "v1.0.0", "v1.1.0", "GO-2026-0001"),
+			}}
+
+			decision := onlyDecision(t, adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(tc.policy))))
+			if decision.Eligible || decision.BlockedReason != tc.reason {
+				t.Fatalf("decision = %+v, want blocked reason %s", decision, tc.reason)
+			}
+			if len(decision.Vulnerabilities) != 1 {
+				t.Fatalf("vulnerabilities = %+v, want blocker context", decision.Vulnerabilities)
+			}
+		})
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyQuarantineBlocksFixingCandidate(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	quarantineDays := 7
+	dir := moduleDir(t, "example.com/lib", "v1.0.0")
+	adapter := fakeSelectionAdapter(now, []string{"v1.0.0", "v1.1.0", "v1.2.0"}, map[string]candidate{
+		"v1.2.0": trustedRelease(now.Add(-24 * time.Hour)),
+		"v1.1.0": trustedRelease(now.Add(-10 * 24 * time.Hour)),
+	})
+	adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: []core.Vulnerability{
+		vulnerability("example.com/lib", "v1.0.0", "v1.2.0", "GO-2026-0001"),
+	}}
+
+	plan := adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(config.Policy{QuarantineDays: &quarantineDays, Pins: map[string]string{}})))
+	decision := onlyDecision(t, plan)
+	if decision.Eligible || decision.BlockedReason != core.ReasonQuarantined || decision.CandidateVersion != "v1.2.0" {
+		t.Fatalf("decision = %+v, want fixing candidate blocked by quarantine", decision)
+	}
+}
+
+func TestPlanTargetVulnerabilityOnlyIndirectOptIn(t *testing.T) {
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	dir := mixedRequirementModuleDir(t)
+	versions := map[string][]string{
+		"example.com/direct":   {"v1.0.0", "v1.1.0"},
+		"example.com/indirect": {"v1.0.0", "v1.2.0"},
+	}
+	releases := map[string]candidate{
+		"v1.1.0": trustedRelease(now.Add(-24 * time.Hour)),
+		"v1.2.0": trustedRelease(now.Add(-24 * time.Hour)),
+	}
+	vulns := []core.Vulnerability{
+		vulnerability("example.com/direct", "v1.0.0", "v1.1.0", "GO-2026-0001"),
+		vulnerability("example.com/indirect", "v1.0.0", "v1.2.0", "GO-2026-0002"),
+	}
+
+	t.Run("disabled", func(t *testing.T) {
+		adapter := fakeModuleSelectionAdapter(now, versions, releases)
+		adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: vulns}
+
+		plan := adapter.PlanTarget(context.Background(), target(dir, vulnerabilityOnlyPolicy(config.Policy{Pins: map[string]string{}})))
+		if got := planModulePaths(plan); len(got) != 1 || got[0] != "example.com/direct" {
+			t.Fatalf("planned modules = %+v, want direct only", got)
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		adapter := fakeModuleSelectionAdapter(now, versions, releases)
+		adapter.vulnerabilityScanner = &fakeVulnerabilityScanner{vulnerabilities: vulns}
+
+		plan := adapter.PlanTarget(context.Background(), targetIncludingIndirect(dir, vulnerabilityOnlyPolicy(config.Policy{Pins: map[string]string{}})))
+		if got := planModulePaths(plan); len(got) != 2 || got[0] != "example.com/direct" || got[1] != "example.com/indirect" {
+			t.Fatalf("planned modules = %+v, want direct and indirect", got)
+		}
+		if got := plan.Decisions[1].Relationship; got != core.RelationshipIndirect {
+			t.Fatalf("indirect relationship = %s, want indirect", got)
+		}
+	})
+}
+
 func TestModuleStateRequirementsDirectRelationshipIsAuthoritative(t *testing.T) {
 	state := moduleState{
 		Direct:   map[string]string{"example.com/lib": "v1.1.0"},
@@ -383,7 +589,7 @@ func TestPlanTargetVersionResolutionFailures(t *testing.T) {
 	t.Run("invalid current version", func(t *testing.T) {
 		adapter := fakeSelectionAdapter(now, nil, nil)
 
-		decision, show := adapter.selectDecision(context.Background(), target(t.TempDir(), config.Policy{Pins: map[string]string{}}), requirement("example.com/lib", "not-a-version", core.RelationshipDirect), now)
+		decision, show := adapter.selectDecision(context.Background(), target(t.TempDir(), config.Policy{Pins: map[string]string{}}), requirement("example.com/lib", "not-a-version", core.RelationshipDirect), now, nil)
 		if !show {
 			t.Fatal("show = false, want candidate resolution failure")
 		}
@@ -517,6 +723,20 @@ type moduleSelectionAdapter struct {
 	releaseLookups []string
 }
 
+type fakeVulnerabilityScanner struct {
+	vulnerabilities []core.Vulnerability
+	err             error
+	calls           int
+}
+
+func (s *fakeVulnerabilityScanner) Scan(context.Context, config.Target) ([]core.Vulnerability, error) {
+	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.vulnerabilities, nil
+}
+
 func fakeModuleSelectionAdapter(now time.Time, versions map[string][]string, releases map[string]candidate) *moduleSelectionAdapter {
 	fake := &moduleSelectionAdapter{}
 	fake.Adapter = &Adapter{
@@ -562,6 +782,23 @@ func fakeSelectionAdapter(now time.Time, versions []string, releases map[string]
 			}
 			return candidate{Version: version}
 		},
+	}
+}
+
+func vulnerabilityOnlyPolicy(policy config.Policy) config.Policy {
+	policy.UpdateMode = config.UpdateModeVulnerabilityOnly
+	if policy.Pins == nil {
+		policy.Pins = map[string]string{}
+	}
+	return policy
+}
+
+func vulnerability(modulePath string, affectedVersion string, fixedVersion string, advisoryID string) core.Vulnerability {
+	return core.Vulnerability{
+		ModulePath:      modulePath,
+		AffectedVersion: affectedVersion,
+		FixedVersions:   []string{fixedVersion},
+		AdvisoryIDs:     []string{advisoryID},
 	}
 }
 

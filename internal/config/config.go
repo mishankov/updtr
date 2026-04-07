@@ -20,6 +20,7 @@ type rawConfig struct {
 
 type rawPolicy struct {
 	QuarantineDays *int              `toml:"quarantine_days"`
+	UpdateMode     *string           `toml:"update_mode"`
 	Allow          *[]string         `toml:"allow"`
 	Deny           *[]string         `toml:"deny"`
 	Pin            map[string]string `toml:"pin"`
@@ -31,6 +32,7 @@ type rawTarget struct {
 	Path            string            `toml:"path"`
 	IncludeIndirect bool              `toml:"include_indirect"`
 	QuarantineDays  *int              `toml:"quarantine_days"`
+	UpdateMode      *string           `toml:"update_mode"`
 	Allow           *[]string         `toml:"allow"`
 	Deny            *[]string         `toml:"deny"`
 	Pin             map[string]string `toml:"pin"`
@@ -54,12 +56,20 @@ type Target struct {
 
 type Policy struct {
 	QuarantineDays *int
+	UpdateMode     UpdateMode
 	Allow          []string
 	AllowSet       bool
 	Deny           []string
 	DenySet        bool
 	Pins           map[string]string
 }
+
+type UpdateMode string
+
+const (
+	UpdateModeNormal            UpdateMode = "normal"
+	UpdateModeVulnerabilityOnly UpdateMode = "vulnerability_only"
+)
 
 func Load(path string) (*Config, error) {
 	if path == "" {
@@ -94,7 +104,7 @@ func validateAndResolve(raw *rawConfig, cfg *Config) error {
 		return errors.New("config must define at least one target")
 	}
 
-	basePolicy := Policy{Pins: map[string]string{}}
+	basePolicy := Policy{UpdateMode: UpdateModeNormal, Pins: map[string]string{}}
 	if raw.Policy != nil {
 		policy, err := resolvePolicy("policy", raw.Policy)
 		if err != nil {
@@ -152,12 +162,19 @@ func validateAndResolve(raw *rawConfig, cfg *Config) error {
 }
 
 func resolvePolicy(label string, raw *rawPolicy) (Policy, error) {
-	policy := Policy{Pins: map[string]string{}}
+	policy := Policy{UpdateMode: UpdateModeNormal, Pins: map[string]string{}}
 	if raw.QuarantineDays != nil {
 		if *raw.QuarantineDays < 0 {
 			return policy, fmt.Errorf("%s.quarantine_days must be non-negative", label)
 		}
 		policy.QuarantineDays = intPtr(*raw.QuarantineDays)
+	}
+	if raw.UpdateMode != nil {
+		updateMode, err := validateUpdateMode(label+".update_mode", *raw.UpdateMode)
+		if err != nil {
+			return policy, err
+		}
+		policy.UpdateMode = updateMode
 	}
 	if raw.Allow != nil {
 		allow, err := validateModuleList(label+".allow", *raw.Allow)
@@ -190,6 +207,13 @@ func resolveTargetPolicy(label string, base Policy, raw rawTarget) (Policy, erro
 			return effective, fmt.Errorf("%s.quarantine_days must be non-negative", label)
 		}
 		effective.QuarantineDays = intPtr(*raw.QuarantineDays)
+	}
+	if raw.UpdateMode != nil {
+		updateMode, err := validateUpdateMode(label+".update_mode", *raw.UpdateMode)
+		if err != nil {
+			return effective, err
+		}
+		effective.UpdateMode = updateMode
 	}
 	if raw.Allow != nil {
 		allow, err := validateModuleList(label+".allow", *raw.Allow)
@@ -262,11 +286,21 @@ func validatePinMap(label string, values map[string]string) (map[string]string, 
 	return out, nil
 }
 
+func validateUpdateMode(label string, value string) (UpdateMode, error) {
+	switch UpdateMode(value) {
+	case UpdateModeNormal, UpdateModeVulnerabilityOnly:
+		return UpdateMode(value), nil
+	default:
+		return "", fmt.Errorf("%s must be one of %q or %q", label, UpdateModeNormal, UpdateModeVulnerabilityOnly)
+	}
+}
+
 func clonePolicy(in Policy) Policy {
 	out := Policy{
-		AllowSet: in.AllowSet,
-		DenySet:  in.DenySet,
-		Pins:     map[string]string{},
+		UpdateMode: in.UpdateMode,
+		AllowSet:   in.AllowSet,
+		DenySet:    in.DenySet,
+		Pins:       map[string]string{},
 	}
 	if in.QuarantineDays != nil {
 		out.QuarantineDays = intPtr(*in.QuarantineDays)

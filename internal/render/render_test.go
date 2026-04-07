@@ -139,6 +139,53 @@ Total: targets=1 eligible=2 blocked=1 applied=0 errors=0
 	}
 }
 
+func TestDetectShowsVulnerabilityContext(t *testing.T) {
+	result := core.RunResult{
+		Mode: "detect",
+		Targets: []core.TargetResult{
+			{
+				Target: config.Target{
+					Name:           "app",
+					NormalizedPath: ".",
+				},
+				Plan: core.TargetPlan{
+					Decisions: []core.Decision{
+						{
+							ModulePath:       "github.com/a/direct",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Eligible:         true,
+							Vulnerabilities: []core.Vulnerability{
+								{AdvisoryIDs: []string{"GO-2026-0001"}},
+							},
+						},
+						{
+							ModulePath:       "github.com/a/blocked",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Relationship:     core.RelationshipIndirect,
+							BlockedReason:    core.ReasonDenied,
+							Vulnerabilities: []core.Vulnerability{
+								{AdvisoryIDs: []string{"GO-2026-0002"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	Detect(&out, result)
+	got := out.String()
+	if !strings.Contains(got, "github.com/a/direct v1.0.0 -> v1.1.0 (vulnerabilities: GO-2026-0001)") {
+		t.Fatalf("output = %q, want eligible vulnerability context", got)
+	}
+	if !strings.Contains(got, "github.com/a/blocked (indirect) v1.0.0 -> v1.1.0: denied (vulnerabilities: GO-2026-0002)") {
+		t.Fatalf("output = %q, want blocked vulnerability context", got)
+	}
+}
+
 func TestApplyLabelsIndirectAppliedUpdates(t *testing.T) {
 	result := core.RunResult{
 		Mode: "apply",
@@ -171,6 +218,37 @@ Total: targets=1 eligible=0 blocked=0 applied=1 errors=0
 `
 	if got := out.String(); got != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestApplyShowsVulnerabilityContext(t *testing.T) {
+	result := core.RunResult{
+		Mode: "apply",
+		Targets: []core.TargetResult{
+			{
+				Target: config.Target{
+					Name:           "app",
+					NormalizedPath: ".",
+				},
+				Applied: []core.AppliedUpdate{
+					{
+						ModulePath:   "github.com/a/direct",
+						FromVersion:  "v1.0.0",
+						ToVersion:    "v1.1.0",
+						Relationship: core.RelationshipDirect,
+						Vulnerabilities: []core.Vulnerability{
+							{AdvisoryIDs: []string{"GO-2026-0001"}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	Apply(&out, result)
+	if got := out.String(); !strings.Contains(got, "github.com/a/direct v1.0.0 -> v1.1.0 (vulnerabilities: GO-2026-0001)") {
+		t.Fatalf("output = %q, want applied vulnerability context", got)
 	}
 }
 
