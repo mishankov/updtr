@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/mishankov/updtr/internal/config"
 	"github.com/mishankov/updtr/internal/core"
@@ -11,12 +12,13 @@ import (
 )
 
 type Engine struct {
-	Go        *goecosystem.Adapter
-	goAdapter goAdapter
+	Go       GoAdapter
+	Reporter ProgressReporter
+	Now      func() time.Time
 }
 
 func New() *Engine {
-	return &Engine{Go: goecosystem.New()}
+	return &Engine{Go: goecosystem.New(), Now: time.Now}
 }
 
 func (e *Engine) Detect(ctx context.Context, cfg *config.Config, selectedNames []string) (core.RunResult, error) {
@@ -29,8 +31,20 @@ func (e *Engine) Detect(ctx context.Context, cfg *config.Config, selectedNames [
 	}
 	result := core.RunResult{Mode: "detect"}
 	for _, target := range targets {
+		startedAt := e.now()
+		e.reporter().TargetStarted(TargetProgress{
+			Mode:   result.Mode,
+			Target: target,
+		})
 		plan := e.adapterFor(target).PlanTarget(ctx, target)
-		result.Targets = append(result.Targets, core.TargetResult{Target: target, Plan: plan})
+		targetResult := core.TargetResult{Target: target, Plan: plan}
+		result.Targets = append(result.Targets, targetResult)
+		e.reporter().TargetFinished(TargetProgress{
+			Mode:    result.Mode,
+			Target:  target,
+			Outcome: outcomeForResult(targetResult),
+			Elapsed: e.now().Sub(startedAt),
+		})
 	}
 	return result, nil
 }
@@ -45,12 +59,23 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 	}
 	result := core.RunResult{Mode: "apply"}
 	for _, target := range targets {
+		startedAt := e.now()
+		e.reporter().TargetStarted(TargetProgress{
+			Mode:   result.Mode,
+			Target: target,
+		})
 		adapter := e.adapterFor(target)
 		targetResult := core.TargetResult{Target: target}
 		plan := adapter.PlanTarget(ctx, target)
 		targetResult.Plan = plan
 		if plan.Error != "" {
 			result.Targets = append(result.Targets, targetResult)
+			e.reporter().TargetFinished(TargetProgress{
+				Mode:    result.Mode,
+				Target:  target,
+				Outcome: outcomeForResult(targetResult),
+				Elapsed: e.now().Sub(startedAt),
+			})
 			continue
 		}
 
@@ -58,6 +83,12 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 		if err != nil {
 			targetResult.Error = err.Error()
 			result.Targets = append(result.Targets, targetResult)
+			e.reporter().TargetFinished(TargetProgress{
+				Mode:    result.Mode,
+				Target:  target,
+				Outcome: outcomeForResult(targetResult),
+				Elapsed: e.now().Sub(startedAt),
+			})
 			continue
 		}
 
@@ -96,11 +127,17 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 		}
 
 		result.Targets = append(result.Targets, targetResult)
+		e.reporter().TargetFinished(TargetProgress{
+			Mode:    result.Mode,
+			Target:  target,
+			Outcome: outcomeForResult(targetResult),
+			Elapsed: e.now().Sub(startedAt),
+		})
 	}
 	return result, nil
 }
 
-type goAdapter interface {
+type GoAdapter interface {
 	CheckPrereq() error
 	PlanTarget(context.Context, config.Target) core.TargetPlan
 	ApplyUpdate(context.Context, config.Target, string, string) (string, error)
@@ -108,11 +145,11 @@ type goAdapter interface {
 	DirectVersions(config.Target) (map[string]string, error)
 }
 
-func (e *Engine) adapterFor(target config.Target) goAdapter {
-	if e.goAdapter != nil {
-		return e.goAdapter
+func (e *Engine) adapterFor(target config.Target) GoAdapter {
+	if e.Go != nil {
+		return e.Go
 	}
-	return e.Go
+	return goecosystem.New()
 }
 
 func (e *Engine) checkPrereqs(targets []config.Target) error {
@@ -164,6 +201,27 @@ func eligibleDecisions(decisions []core.Decision) []core.Decision {
 		return eligible[i].ModulePath < eligible[j].ModulePath
 	})
 	return eligible
+}
+
+func (e *Engine) reporter() ProgressReporter {
+	if e.Reporter != nil {
+		return e.Reporter
+	}
+	return nopProgressReporter{}
+}
+
+func (e *Engine) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
+}
+
+func outcomeForResult(result core.TargetResult) TargetOutcome {
+	if result.EffectiveError() != "" {
+		return TargetOutcomeFailure
+	}
+	return TargetOutcomeSuccess
 }
 
 func additionalDirectChanges(before map[string]string, after map[string]string, applied []core.AppliedUpdate) bool {

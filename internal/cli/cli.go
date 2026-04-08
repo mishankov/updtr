@@ -21,6 +21,8 @@ func IsSilentExit(err error) bool {
 	return ok
 }
 
+var newEngine = orchestrator.New
+
 func New(version string, out io.Writer, errOut io.Writer) *cobra.Command {
 	var configPath string
 
@@ -89,7 +91,9 @@ func runCommand(use string, short string, out io.Writer, run func(*orchestrator.
 			if err != nil {
 				return err
 			}
-			hasFailures, err := run(orchestrator.New(), cfg, targets)
+			engine := newEngine()
+			engine.Reporter = newProgressWriter(out)
+			hasFailures, err := run(engine, cfg, targets)
 			if err != nil {
 				return err
 			}
