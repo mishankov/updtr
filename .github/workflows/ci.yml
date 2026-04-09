@@ -30,3 +30,7 @@ jobs:
 
       - name: Run tests
         run: go test ./...
+
+      - name: Build Docker action
+        if: matrix.os == 'ubuntu-latest'
+        run: docker build -t updtr-action .

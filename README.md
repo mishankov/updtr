@@ -60,6 +60,60 @@ Use a non-default config path:
 updtr detect --config ./configs/updtr.yaml
 ```
 
+## GitHub Action
+
+`updtr` also ships as a Docker-based GitHub Action for scheduled or on-demand dependency updates.
+
+```yaml
+name: dependency-updates
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  updtr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run updtr
+        uses: mishankov/updtr@v1
+        with:
+          github-token: ${{ github.token }}
+```
+
+Notes:
+
+- `actions/checkout` is required. The action runs inside the checked-out repository and does not clone on its own.
+- The default `actions/checkout` fetch configuration is sufficient; the action resolves the managed branch state before pushing repeat updates.
+- `contents: write` and `pull-requests: write` are only needed for changed runs that push the managed branch and create or update a PR.
+- The action treats no-op runs as success and emits structured outputs through `GITHUB_OUTPUT`.
+
+Supported inputs:
+
+- `config`: path to `updtr.yaml` or `updtr.yml`; when omitted, the action uses the CLI default resolution and falls back from `updtr.yaml` to `updtr.yml`
+- `targets`: comma- or newline-separated target names mapped to repeatable `--target`
+- `base-branch`: optional PR base branch override; when set, the action fetches and runs from `origin/<base-branch>` instead of the workflow checkout ref
+- `commit-message`: optional commit message override
+- `pull-request-title`: optional pull request title override
+- `github-token`: token used for pull request create-or-update API calls
+
+Outputs:
+
+- `changed`: `true` when repository files changed after `updtr apply`
+- `committed`: `true` when the action committed and pushed the managed branch
+- `branch`: deterministic managed branch name for changed runs
+- `pull_request_operation`: `none`, `created`, or `updated`
+- `pull_request_number`: PR number for created or updated runs
+- `pull_request_url`: PR URL for created or updated runs
+
 ## Configuration
 
 By default, `updtr` reads `updtr.yaml` from the current working directory. `updtr.yml` is also supported.

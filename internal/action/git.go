@@ -1,0 +1,232 @@
+package action
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"slices"
+	"strings"
+)
+
+type executableRunner struct {
+	path   string
+	stdout io.Writer
+	stderr io.Writer
+}
+
+func newExecutableRunner(stdout io.Writer, stderr io.Writer) (*executableRunner, error) {
+	path, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve updtr executable: %w", err)
+	}
+	return &executableRunner{path: path, stdout: stdout, stderr: stderr}, nil
+}
+
+func (r *executableRunner) Apply(ctx context.Context, opts RunOptions) error {
+	args := applyArgs(opts)
+	for _, target := range opts.Targets {
+		args = append(args, "--target", target)
+	}
+	cmd := exec.CommandContext(ctx, r.path, args...)
+	cmd.Stdout = r.stdout
+	cmd.Stderr = r.stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run updtr apply: %w", err)
+	}
+	return nil
+}
+
+func applyArgs(opts RunOptions) []string {
+	args := []string{"apply"}
+	if opts.ConfigPath != "" {
+		args = append(args, "--config", opts.ConfigPath)
+	}
+	return args
+}
+
+type gitRunner interface {
+	CombinedOutput(context.Context, ...string) ([]byte, error)
+}
+
+type execGitRunner struct{}
+
+func (execGitRunner) CombinedOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	return cmd.CombinedOutput()
+}
+
+type commandGit struct {
+	runner gitRunner
+}
+
+func newCommandGit() commandGit {
+	return commandGit{runner: execGitRunner{}}
+}
+
+func (g commandGit) EnsureClean(ctx context.Context) error {
+	status, err := g.trackedStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("repository has changes before updtr action started")
+	}
+	return nil
+}
+
+func (g commandGit) HasChanges(ctx context.Context) (bool, error) {
+	status, err := g.trackedStatus(ctx)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(status) != "", nil
+}
+
+func (g commandGit) UntrackedFiles(ctx context.Context) ([]string, error) {
+	out, err := g.output(ctx, "ls-files", "--others", "--exclude-standard", "--", ".")
+	if err != nil {
+		return nil, err
+	}
+	if out == "" {
+		return nil, nil
+	}
+	files := strings.Split(out, "\n")
+	slices.Sort(files)
+	return files, nil
+}
+
+func (g commandGit) CheckoutBaseBranch(ctx context.Context, branch string) error {
+	remoteRef := "refs/remotes/origin/" + branch
+	fetchRef := "+refs/heads/" + branch + ":" + remoteRef
+	if err := g.run(ctx, "fetch", "--no-tags", "--depth=1", "origin", fetchRef); err != nil {
+		return err
+	}
+	return g.run(ctx, "checkout", "--detach", remoteRef)
+}
+
+func (g commandGit) CheckoutManagedBranch(ctx context.Context, branch string) error {
+	return g.run(ctx, "checkout", "-B", branch)
+}
+
+func (g commandGit) ConfigureAuthor(ctx context.Context) error {
+	if err := g.run(ctx, "config", "user.name", "github-actions[bot]"); err != nil {
+		return err
+	}
+	return g.run(ctx, "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
+}
+
+func (g commandGit) StageChanges(ctx context.Context, newFiles []string) error {
+	if err := g.run(ctx, "add", "--update", "--", "."); err != nil {
+		return err
+	}
+	if len(newFiles) == 0 {
+		return nil
+	}
+	toStage := slices.Clone(newFiles)
+	slices.Sort(toStage)
+	args := append([]string{"add", "--"}, toStage...)
+	return g.run(ctx, args...)
+}
+
+func (g commandGit) HasStagedChanges(ctx context.Context) (bool, error) {
+	out, err := g.output(ctx, "diff", "--cached", "--name-only")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+func (g commandGit) Commit(ctx context.Context, message string) error {
+	return g.run(ctx, "commit", "-m", message)
+}
+
+func (g commandGit) Push(ctx context.Context, branch string) error {
+	remoteRef := "refs/heads/" + branch
+	expectedOID, exists, err := g.remoteRefOID(ctx, "origin", remoteRef)
+	if err != nil {
+		return err
+	}
+	lease := "--force-with-lease=" + remoteRef + ":"
+	if exists {
+		lease += expectedOID
+	}
+	return g.run(ctx, "push", lease, "origin", "HEAD:"+remoteRef)
+}
+
+func (g commandGit) status(ctx context.Context) (string, error) {
+	return g.output(ctx, "status", "--porcelain")
+}
+
+func (g commandGit) trackedStatus(ctx context.Context) (string, error) {
+	return g.output(ctx, "status", "--porcelain", "--untracked-files=no")
+}
+
+func (g commandGit) remoteRefOID(ctx context.Context, remote string, ref string) (string, bool, error) {
+	args := []string{"ls-remote", "--exit-code", remote, ref}
+	out, err := g.runner.CombinedOutput(ctx, args...)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+			return "", false, nil
+		}
+		return "", false, gitError(args, out, err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "", false, fmt.Errorf("git %s: unexpected empty output", strings.Join(args, " "))
+	}
+	return fields[0], true, nil
+}
+
+func (g commandGit) output(ctx context.Context, args ...string) (string, error) {
+	out, err := g.runner.CombinedOutput(ctx, args...)
+	if err != nil {
+		return "", gitError(args, out, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (g commandGit) run(ctx context.Context, args ...string) error {
+	_, err := g.output(ctx, args...)
+	return err
+}
+
+func gitError(args []string, out []byte, err error) error {
+	message := strings.TrimSpace(string(bytes.TrimSpace(out)))
+	if message == "" {
+		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+}
+
+type fileOutputWriter struct {
+	path string
+}
+
+var osWriteFile = func(name string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(name, data, perm)
+}
+
+func (w fileOutputWriter) Write(outputs Outputs) error {
+	if w.path == "" {
+		return nil
+	}
+	var body strings.Builder
+	writeOutput := func(key string, value string) {
+		body.WriteString(key)
+		body.WriteByte('=')
+		body.WriteString(value)
+		body.WriteByte('\n')
+	}
+	writeOutput("changed", fmt.Sprintf("%t", outputs.Changed))
+	writeOutput("committed", fmt.Sprintf("%t", outputs.Committed))
+	writeOutput("branch", outputs.Branch)
+	writeOutput("pull_request_operation", outputs.PullRequestOperation)
+	writeOutput("pull_request_number", outputs.PullRequestNumber)
+	writeOutput("pull_request_url", outputs.PullRequestURL)
+	return osWriteFile(w.path, []byte(body.String()), 0o644)
+}
