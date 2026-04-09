@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -396,6 +397,125 @@ targets:
 				t.Fatal("Load succeeded, want error")
 			}
 		})
+	}
+}
+
+func TestNormalizeTargetPathPreservesLiteralBackslashesOnPOSIX(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only path semantics")
+	}
+
+	got, err := normalizeTargetPath("./foo\\bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "foo\\bar" {
+		t.Fatalf("normalized path = %q, want literal backslash preserved", got)
+	}
+}
+
+func TestNormalizeTargetPathLeadingBackslashRemainsRelativeOnPOSIX(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only path semantics")
+	}
+
+	got, err := normalizeTargetPath("\\foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "\\foo" {
+		t.Fatalf("normalized path = %q, want leading backslash preserved as relative path", got)
+	}
+}
+
+func TestNormalizeTargetPathNormalizesWindowsSeparatorsOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only path semantics")
+	}
+
+	got, err := normalizeTargetPath(".\\tools\\cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tools/cli" {
+		t.Fatalf("normalized path = %q, want slash-normalized windows path", got)
+	}
+}
+
+func TestNormalizeTargetPathDrivePrefixDependsOnPlatformSemantics(t *testing.T) {
+	for _, input := range []string{"a:/b", "a:foo"} {
+		t.Run(input, func(t *testing.T) {
+			got, err := normalizeTargetPath(input)
+			if runtime.GOOS == "windows" {
+				if err == nil || !strings.Contains(err.Error(), "absolute paths are not allowed") {
+					t.Fatalf("normalizeTargetPath err = %v, want absolute-path error on Windows", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != input {
+				t.Fatalf("normalized path = %q, want POSIX-relative drive-prefixed path preserved", got)
+			}
+		})
+	}
+}
+
+func TestLoadDrivePrefixedPathDependsOnPlatformSemantics(t *testing.T) {
+	for _, input := range []string{"a:/b", "a:foo"} {
+		t.Run(input, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "updtr.yaml")
+			writeConfig(t, path, `
+targets:
+  - name: root
+    ecosystem: go
+    path: `+input+`
+`)
+
+			cfg, err := Load(path)
+			if runtime.GOOS == "windows" {
+				if err == nil || !strings.Contains(err.Error(), "absolute paths are not allowed") {
+					t.Fatalf("Load err = %v, want absolute-path error on Windows", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Targets[0].Path; got != input {
+				t.Fatalf("target path = %q, want POSIX-relative drive-prefixed path", got)
+			}
+			if got := cfg.Targets[0].AbsPath; got != filepath.Join(dir, input) {
+				t.Fatalf("target abs path = %q, want config-relative drive-prefixed path", got)
+			}
+		})
+	}
+}
+
+func TestLoadDuplicateEffectiveTargetDependsOnPlatformPathSemantics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "updtr.yaml")
+	writeConfig(t, path, `
+targets:
+  - name: slash
+    ecosystem: go
+    path: ./foo/bar
+  - name: backslash
+    ecosystem: go
+    path: './foo\bar'
+`)
+
+	_, err := Load(path)
+	if runtime.GOOS == "windows" {
+		if err == nil || !strings.Contains(err.Error(), "duplicate effective target go:foo/bar") {
+			t.Fatalf("Load err = %v, want duplicate effective target on Windows", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("Load err = %v, want distinct POSIX targets", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -288,18 +289,40 @@ func normalizeTargetPath(input string) (string, error) {
 	if input == "" {
 		return "", errors.New("path is required")
 	}
-	if filepath.IsAbs(input) {
+	if isAbsoluteTargetPath(input) {
 		return "", errors.New("absolute paths are not allowed")
 	}
 	clean := filepath.Clean(input)
 	if clean == "." {
 		return ".", nil
 	}
-	slashed := filepath.ToSlash(clean)
-	if slashed == ".." || strings.HasPrefix(slashed, "../") {
+	cleanForChecks := filepath.ToSlash(clean)
+	if cleanForChecks == ".." || strings.HasPrefix(cleanForChecks, "../") {
 		return "", errors.New("path escapes the repository")
 	}
-	return slashed, nil
+	if runtime.GOOS == "windows" {
+		return cleanForChecks, nil
+	}
+	return clean, nil
+}
+
+func isAbsoluteTargetPath(input string) bool {
+	if filepath.IsAbs(input) {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	slashed := strings.ReplaceAll(input, "\\", "/")
+	if strings.HasPrefix(slashed, "/") || strings.HasPrefix(slashed, "//") {
+		return true
+	}
+	return hasWindowsDrivePrefix(slashed)
+}
+
+func hasWindowsDrivePrefix(input string) bool {
+	return len(input) >= 2 && input[1] == ':' &&
+		((input[0] >= 'a' && input[0] <= 'z') || (input[0] >= 'A' && input[0] <= 'Z'))
 }
 
 func validateModuleList(label string, values []string) ([]string, error) {
