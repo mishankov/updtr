@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/mishankov/updtr/internal/config"
 	"github.com/mishankov/updtr/internal/core"
 	"github.com/mishankov/updtr/internal/orchestrator"
+	"github.com/mishankov/updtr/internal/progress"
 )
 
 func TestHelpMentionsYAMLConfigDefault(t *testing.T) {
@@ -63,20 +65,71 @@ func TestLoadPathUsesDefaultDiscoveryUnlessConfigFlagChanged(t *testing.T) {
 	}
 }
 
-func TestDetectCommandPrintsProgressBeforeFinalReport(t *testing.T) {
-	restore := stubNewEngine(func() *orchestrator.Engine {
+func TestDetectTerminalPolicyRespectsTTYAndNoColor(t *testing.T) {
+	restoreTTY := stubTerminalWriterCheck(func(io.Writer) bool { return true })
+	defer restoreTTY()
+
+	restoreEnv := stubLookupEnv(func(key string) (string, bool) {
+		if key == "NO_COLOR" {
+			return "", false
+		}
+		return "", false
+	})
+	defer restoreEnv()
+
+	got := detectTerminalPolicy(&bytes.Buffer{})
+	if !got.LiveUpdates || !got.Color {
+		t.Fatalf("policy = %+v, want live updates and color for tty without NO_COLOR", got)
+	}
+
+	restoreEnv = stubLookupEnv(func(key string) (string, bool) {
+		if key == "NO_COLOR" {
+			return "1", true
+		}
+		return "", false
+	})
+	defer restoreEnv()
+
+	got = detectTerminalPolicy(&bytes.Buffer{})
+	if !got.LiveUpdates || got.Color {
+		t.Fatalf("policy = %+v, want live updates without color when NO_COLOR is set", got)
+	}
+
+	restoreTTY = stubTerminalWriterCheck(func(io.Writer) bool { return false })
+	defer restoreTTY()
+	got = detectTerminalPolicy(&bytes.Buffer{})
+	if got.LiveUpdates || got.Color {
+		t.Fatalf("policy = %+v, want non-interactive fallback without color for non-tty", got)
+	}
+}
+
+func TestIsTerminalWriterRejectsDevNull(t *testing.T) {
+	file, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	if isTerminalWriter(file) {
+		t.Fatalf("isTerminalWriter(%q) = true, want false", os.DevNull)
+	}
+}
+
+func TestDetectCommandUsesAppendOnlyFallbackProgressAndTable(t *testing.T) {
+	restorePolicy := stubTerminalPolicy(terminalPolicy{LiveUpdates: false, Color: false})
+	defer restorePolicy()
+
+	restoreEngine := stubNewEngine(func() *orchestrator.Engine {
 		return &orchestrator.Engine{
 			Go: &cliFakeAdapter{
 				plansByTarget: map[string]core.TargetPlan{
 					"app": {
-						Decisions: []core.Decision{
-							{
-								ModulePath:       "github.com/a/direct",
-								CurrentVersion:   "v1.0.0",
-								CandidateVersion: "v1.1.0",
-								Eligible:         true,
-							},
-						},
+						Decisions: []core.Decision{{
+							ModulePath:       "github.com/a/direct",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Eligible:         true,
+						}},
 					},
 					"worker": {Error: "plan failed"},
 				},
@@ -89,7 +142,7 @@ func TestDetectCommandPrintsProgressBeforeFinalReport(t *testing.T) {
 			),
 		}
 	})
-	defer restore()
+	defer restoreEngine()
 
 	configPath := writeConfigFile(t, `
 targets:
@@ -111,56 +164,50 @@ targets:
 	}
 
 	got := out.String()
-	progress := []string{
-		"detect: target app (.) started",
-		"detect: target app (.) finished outcome=success elapsed=1s",
-		"detect: target worker (worker) started",
-		"detect: target worker (worker) finished outcome=failure elapsed=3s",
+	assertInOrder(t, got,
+		"detect [1/2 targets] app (.): started",
+		"detect [1/2 targets] app (.): planning 0/1 dependencies checked",
+		"detect [1/2 targets] app (.): planning 1/1 dependencies checked (github.com/a/direct)",
+		"detect [1/2 targets] app (.): finished SUCCESS in 1s",
+		"detect [2/2 targets] worker (worker): started",
+		"detect [2/2 targets] worker (worker): finished FAILURE in 3s",
+		"| TARGET",
+	)
+	if strings.Contains(got, "\r\033[2K") {
+		t.Fatalf("output = %q, want append-only fallback without live-update control sequences", got)
 	}
-	assertInOrder(t, got, progress...)
-
-	wantSummary := `Target app (.)
-Eligible:
-  - github.com/a/direct v1.0.0 -> v1.1.0
-Summary: eligible=1 blocked=0 applied=0 errors=0
-
-Target worker (worker)
-Errors:
-  - plan failed
-Summary: eligible=0 blocked=0 applied=0 errors=1
-
-Total: targets=2 eligible=1 blocked=0 applied=0 errors=1
-`
-	if stripped := stripProgressLines(got); stripped != wantSummary {
-		t.Fatalf("summary after stripping progress:\n%s\nwant:\n%s", stripped, wantSummary)
+	if !strings.Contains(got, "| app (.)         | github.com/a/direct | v1.0.0 | v1.1.0 | ELIGIBLE | update available |") {
+		t.Fatalf("output = %q, want eligible row in final table", got)
+	}
+	if !strings.Contains(got, "| worker (worker) |                     |        |        | ERROR    | plan failed") {
+		t.Fatalf("output = %q, want target error row in final table", got)
 	}
 }
 
-func TestApplyCommandPrintsSelectedTargetProgressBeforeFinalReport(t *testing.T) {
-	restore := stubNewEngine(func() *orchestrator.Engine {
+func TestApplyCommandUsesLivePresenterForTTYPolicy(t *testing.T) {
+	restorePolicy := stubTerminalPolicy(terminalPolicy{LiveUpdates: true, Color: false})
+	defer restorePolicy()
+
+	restoreEngine := stubNewEngine(func() *orchestrator.Engine {
 		return &orchestrator.Engine{
 			Go: &cliFakeAdapter{
 				plansByTarget: map[string]core.TargetPlan{
 					"app": {
-						Decisions: []core.Decision{
-							{
-								ModulePath:       "github.com/a/direct",
-								CurrentVersion:   "v1.0.0",
-								CandidateVersion: "v1.1.0",
-								Eligible:         true,
-							},
-						},
+						Decisions: []core.Decision{{
+							ModulePath:       "github.com/a/direct",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Eligible:         true,
+						}},
 					},
 					"worker": {
-						Decisions: []core.Decision{
-							{
-								ModulePath:       "github.com/a/indirect",
-								CurrentVersion:   "v1.0.0",
-								CandidateVersion: "v1.1.0",
-								Relationship:     core.RelationshipIndirect,
-								Eligible:         true,
-							},
-						},
+						Decisions: []core.Decision{{
+							ModulePath:       "github.com/a/indirect",
+							CurrentVersion:   "v1.0.0",
+							CandidateVersion: "v1.1.0",
+							Relationship:     core.RelationshipIndirect,
+							Eligible:         true,
+						}},
 					},
 				},
 				beforeByTarget: map[string]map[string]string{
@@ -176,7 +223,7 @@ func TestApplyCommandPrintsSelectedTargetProgressBeforeFinalReport(t *testing.T)
 			),
 		}
 	})
-	defer restore()
+	defer restoreEngine()
 
 	configPath := writeConfigFile(t, `
 targets:
@@ -197,24 +244,20 @@ targets:
 	}
 
 	got := out.String()
-	progress := []string{
-		"apply: target worker (worker) started",
-		"apply: target worker (worker) finished outcome=success elapsed=2s",
+	if !strings.Contains(got, "\r\033[2K- apply [1/1 targets] worker (worker): started") {
+		t.Fatalf("output = %q, want live presenter carriage-return updates", got)
 	}
-	assertInOrder(t, got, progress...)
-	if strings.Contains(got, "apply: target app (.)") {
+	if !strings.Contains(got, "apply [1/1 targets] worker (worker): mutating 1/1 updates processed (github.com/a/indirect)") {
+		t.Fatalf("output = %q, want mutation progress in live output", got)
+	}
+	if strings.Contains(got, "app (.)") {
 		t.Fatalf("output = %q, want no progress for unselected target", got)
 	}
-
-	wantSummary := `Target worker (worker)
-Applied:
-  - github.com/a/indirect (indirect) v1.0.0 -> v1.1.0
-Summary: eligible=1 blocked=0 applied=1 errors=0
-
-Total: targets=1 eligible=1 blocked=0 applied=1 errors=0
-`
-	if stripped := stripProgressLines(got); stripped != wantSummary {
-		t.Fatalf("summary after stripping progress:\n%s\nwant:\n%s", stripped, wantSummary)
+	if !strings.Contains(got, "| worker (worker) | github.com/a/indirect (indirect) | v1.0.0 | v1.1.0 | APPLIED |") {
+		t.Fatalf("output = %q, want applied row in final table", got)
+	}
+	if strings.Contains(got, "\x1b[32m") || strings.Contains(got, "\x1b[31m") {
+		t.Fatalf("output = %q, want no color escapes when color is disabled", got)
 	}
 }
 
@@ -229,8 +272,23 @@ func (a *cliFakeAdapter) CheckPrereq() error {
 	return nil
 }
 
-func (a *cliFakeAdapter) PlanTarget(_ context.Context, target config.Target) core.TargetPlan {
-	return a.plansByTarget[target.Name]
+func (a *cliFakeAdapter) PlanTarget(_ context.Context, target config.Target, reports ...func(progress.PlanUpdate)) core.TargetPlan {
+	plan := a.plansByTarget[target.Name]
+	if plan.Error == "" {
+		report := firstReport(reports)
+		if report != nil {
+			report(progress.PlanUpdate{Kind: progress.PlanKindStarted, TotalDependencies: len(plan.Decisions)})
+			for i, decision := range plan.Decisions {
+				report(progress.PlanUpdate{
+					Kind:                  progress.PlanKindChecked,
+					DependenciesCompleted: i + 1,
+					TotalDependencies:     len(plan.Decisions),
+					ModulePath:            decision.ModulePath,
+				})
+			}
+		}
+	}
+	return plan
 }
 
 func (a *cliFakeAdapter) ApplyUpdate(_ context.Context, target config.Target, modulePath string, version string) (string, error) {
@@ -260,6 +318,39 @@ func stubNewEngine(factory func() *orchestrator.Engine) func() {
 	return func() {
 		newEngine = previous
 	}
+}
+
+func stubTerminalPolicy(policy terminalPolicy) func() {
+	previous := resolveTerminalPolicy
+	resolveTerminalPolicy = func(io.Writer) terminalPolicy {
+		return policy
+	}
+	return func() {
+		resolveTerminalPolicy = previous
+	}
+}
+
+func stubLookupEnv(fn func(string) (string, bool)) func() {
+	previous := lookupEnv
+	lookupEnv = fn
+	return func() {
+		lookupEnv = previous
+	}
+}
+
+func stubTerminalWriterCheck(fn func(io.Writer) bool) func() {
+	previous := terminalWriterCheck
+	terminalWriterCheck = fn
+	return func() {
+		terminalWriterCheck = previous
+	}
+}
+
+func firstReport(reports []func(progress.PlanUpdate)) func(progress.PlanUpdate) {
+	if len(reports) == 0 {
+		return nil
+	}
+	return reports[0]
 }
 
 func writeConfigFile(t *testing.T, body string) string {
@@ -301,15 +392,4 @@ func assertInOrder(t *testing.T, text string, fragments ...string) {
 		}
 		index += next + len(fragment)
 	}
-}
-
-func stripProgressLines(text string) string {
-	var kept []string
-	for _, line := range strings.SplitAfter(text, "\n") {
-		if strings.HasPrefix(line, "detect: target ") || strings.HasPrefix(line, "apply: target ") {
-			continue
-		}
-		kept = append(kept, line)
-	}
-	return strings.Join(kept, "")
 }

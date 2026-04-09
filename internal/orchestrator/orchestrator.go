@@ -9,6 +9,7 @@ import (
 	"github.com/mishankov/updtr/internal/config"
 	"github.com/mishankov/updtr/internal/core"
 	"github.com/mishankov/updtr/internal/goecosystem"
+	"github.com/mishankov/updtr/internal/progress"
 )
 
 type Engine struct {
@@ -30,20 +31,26 @@ func (e *Engine) Detect(ctx context.Context, cfg *config.Config, selectedNames [
 		return core.RunResult{}, err
 	}
 	result := core.RunResult{Mode: "detect"}
-	for _, target := range targets {
+	for i, target := range targets {
 		startedAt := e.now()
-		e.reporter().TargetStarted(TargetProgress{
-			Mode:   result.Mode,
-			Target: target,
+		e.reporter().Report(progress.Event{
+			Kind:         progress.KindTargetStarted,
+			Mode:         result.Mode,
+			Target:       target,
+			TargetIndex:  i + 1,
+			TotalTargets: len(targets),
 		})
-		plan := e.adapterFor(target).PlanTarget(ctx, target)
+		plan := e.adapterFor(target).PlanTarget(ctx, target, e.planProgressReporter(result.Mode, target, i+1, len(targets)))
 		targetResult := core.TargetResult{Target: target, Plan: plan}
 		result.Targets = append(result.Targets, targetResult)
-		e.reporter().TargetFinished(TargetProgress{
-			Mode:    result.Mode,
-			Target:  target,
-			Outcome: outcomeForResult(targetResult),
-			Elapsed: e.now().Sub(startedAt),
+		e.reporter().Report(progress.Event{
+			Kind:         progress.KindTargetFinished,
+			Mode:         result.Mode,
+			Target:       target,
+			TargetIndex:  i + 1,
+			TotalTargets: len(targets),
+			Outcome:      outcomeForResult(targetResult),
+			Elapsed:      e.now().Sub(startedAt),
 		})
 	}
 	return result, nil
@@ -58,23 +65,29 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 		return core.RunResult{}, err
 	}
 	result := core.RunResult{Mode: "apply"}
-	for _, target := range targets {
+	for i, target := range targets {
 		startedAt := e.now()
-		e.reporter().TargetStarted(TargetProgress{
-			Mode:   result.Mode,
-			Target: target,
+		e.reporter().Report(progress.Event{
+			Kind:         progress.KindTargetStarted,
+			Mode:         result.Mode,
+			Target:       target,
+			TargetIndex:  i + 1,
+			TotalTargets: len(targets),
 		})
 		adapter := e.adapterFor(target)
 		targetResult := core.TargetResult{Target: target}
-		plan := adapter.PlanTarget(ctx, target)
+		plan := adapter.PlanTarget(ctx, target, e.planProgressReporter(result.Mode, target, i+1, len(targets)))
 		targetResult.Plan = plan
 		if plan.Error != "" {
 			result.Targets = append(result.Targets, targetResult)
-			e.reporter().TargetFinished(TargetProgress{
-				Mode:    result.Mode,
-				Target:  target,
-				Outcome: outcomeForResult(targetResult),
-				Elapsed: e.now().Sub(startedAt),
+			e.reporter().Report(progress.Event{
+				Kind:         progress.KindTargetFinished,
+				Mode:         result.Mode,
+				Target:       target,
+				TargetIndex:  i + 1,
+				TotalTargets: len(targets),
+				Outcome:      outcomeForResult(targetResult),
+				Elapsed:      e.now().Sub(startedAt),
 			})
 			continue
 		}
@@ -83,22 +96,45 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 		if err != nil {
 			targetResult.Error = err.Error()
 			result.Targets = append(result.Targets, targetResult)
-			e.reporter().TargetFinished(TargetProgress{
-				Mode:    result.Mode,
-				Target:  target,
-				Outcome: outcomeForResult(targetResult),
-				Elapsed: e.now().Sub(startedAt),
+			e.reporter().Report(progress.Event{
+				Kind:         progress.KindTargetFinished,
+				Mode:         result.Mode,
+				Target:       target,
+				TargetIndex:  i + 1,
+				TotalTargets: len(targets),
+				Outcome:      outcomeForResult(targetResult),
+				Elapsed:      e.now().Sub(startedAt),
 			})
 			continue
 		}
 
 		eligible := eligibleDecisions(plan.Decisions)
-		for _, decision := range eligible {
+		e.reporter().Report(progress.Event{
+			Kind:           progress.KindStageStarted,
+			Mode:           result.Mode,
+			Target:         target,
+			TargetIndex:    i + 1,
+			TotalTargets:   len(targets),
+			Stage:          progress.StageMutating,
+			TotalMutations: len(eligible),
+		})
+		for idx, decision := range eligible {
 			output, err := adapter.ApplyUpdate(ctx, target, decision.ModulePath, decision.CandidateVersion)
 			if err != nil {
 				targetResult.Error = err.Error()
 				break
 			}
+			e.reporter().Report(progress.Event{
+				Kind:               progress.KindMutationProcessed,
+				Mode:               result.Mode,
+				Target:             target,
+				TargetIndex:        i + 1,
+				TotalTargets:       len(targets),
+				Stage:              progress.StageMutating,
+				MutationsCompleted: idx + 1,
+				TotalMutations:     len(eligible),
+				ModulePath:         decision.ModulePath,
+			})
 			targetResult.Applied = append(targetResult.Applied, core.AppliedUpdate{
 				ModulePath:      decision.ModulePath,
 				FromVersion:     decision.CurrentVersion,
@@ -127,11 +163,14 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 		}
 
 		result.Targets = append(result.Targets, targetResult)
-		e.reporter().TargetFinished(TargetProgress{
-			Mode:    result.Mode,
-			Target:  target,
-			Outcome: outcomeForResult(targetResult),
-			Elapsed: e.now().Sub(startedAt),
+		e.reporter().Report(progress.Event{
+			Kind:         progress.KindTargetFinished,
+			Mode:         result.Mode,
+			Target:       target,
+			TargetIndex:  i + 1,
+			TotalTargets: len(targets),
+			Outcome:      outcomeForResult(targetResult),
+			Elapsed:      e.now().Sub(startedAt),
 		})
 	}
 	return result, nil
@@ -139,7 +178,7 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, selectedNames []
 
 type GoAdapter interface {
 	CheckPrereq() error
-	PlanTarget(context.Context, config.Target) core.TargetPlan
+	PlanTarget(context.Context, config.Target, ...func(progress.PlanUpdate)) core.TargetPlan
 	ApplyUpdate(context.Context, config.Target, string, string) (string, error)
 	Tidy(context.Context, config.Target) (string, error)
 	DirectVersions(config.Target) (map[string]string, error)
@@ -217,11 +256,40 @@ func (e *Engine) now() time.Time {
 	return time.Now()
 }
 
-func outcomeForResult(result core.TargetResult) TargetOutcome {
-	if result.EffectiveError() != "" {
-		return TargetOutcomeFailure
+func (e *Engine) planProgressReporter(mode string, target config.Target, targetIndex int, totalTargets int) func(progress.PlanUpdate) {
+	return func(update progress.PlanUpdate) {
+		switch update.Kind {
+		case progress.PlanKindStarted:
+			e.reporter().Report(progress.Event{
+				Kind:              progress.KindStageStarted,
+				Mode:              mode,
+				Target:            target,
+				TargetIndex:       targetIndex,
+				TotalTargets:      totalTargets,
+				Stage:             progress.StagePlanning,
+				TotalDependencies: update.TotalDependencies,
+			})
+		case progress.PlanKindChecked:
+			e.reporter().Report(progress.Event{
+				Kind:                  progress.KindDependencyChecked,
+				Mode:                  mode,
+				Target:                target,
+				TargetIndex:           targetIndex,
+				TotalTargets:          totalTargets,
+				Stage:                 progress.StagePlanning,
+				DependenciesCompleted: update.DependenciesCompleted,
+				TotalDependencies:     update.TotalDependencies,
+				ModulePath:            update.ModulePath,
+			})
+		}
 	}
-	return TargetOutcomeSuccess
+}
+
+func outcomeForResult(result core.TargetResult) progress.TargetOutcome {
+	if result.EffectiveError() != "" {
+		return progress.TargetOutcomeFailure
+	}
+	return progress.TargetOutcomeSuccess
 }
 
 func additionalDirectChanges(before map[string]string, after map[string]string, applied []core.AppliedUpdate) bool {

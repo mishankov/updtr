@@ -8,6 +8,7 @@ import (
 
 	"github.com/mishankov/updtr/internal/config"
 	"github.com/mishankov/updtr/internal/core"
+	"github.com/mishankov/updtr/internal/progress"
 )
 
 func TestApplyPassesSelectedPlanCandidateToAdapter(t *testing.T) {
@@ -90,12 +91,18 @@ func TestDetectPreservesPerTargetIncludeIndirect(t *testing.T) {
 	}
 }
 
-func TestDetectReportsTargetProgressInDeterministicOrder(t *testing.T) {
+func TestDetectReportsDependencyProgressInDeterministicOrder(t *testing.T) {
 	reporter := &recordingReporter{}
 	adapter := &fakeGoAdapter{
 		plansByTarget: map[string]core.TargetPlan{
 			"first":  {Decisions: []core.Decision{{ModulePath: "example.com/one", Eligible: true}}},
 			"second": {Error: "plan failed"},
+		},
+		planProgressByTarget: map[string][]progress.PlanUpdate{
+			"first": {
+				{Kind: progress.PlanKindStarted, TotalDependencies: 1},
+				{Kind: progress.PlanKindChecked, DependenciesCompleted: 1, TotalDependencies: 1, ModulePath: "example.com/one"},
+			},
 		},
 	}
 	engine := &Engine{
@@ -117,48 +124,46 @@ func TestDetectReportsTargetProgressInDeterministicOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	if len(result.Targets) != 2 || result.Targets[1].Plan.Error != "plan failed" {
 		t.Fatalf("result = %+v, want second target plan failure preserved", result)
 	}
 
-	want := []TargetProgress{
-		{Mode: "detect", Target: cfg.Targets[0]},
-		{Mode: "detect", Target: cfg.Targets[0], Outcome: TargetOutcomeSuccess, Elapsed: time.Second},
-		{Mode: "detect", Target: cfg.Targets[1]},
-		{Mode: "detect", Target: cfg.Targets[1], Outcome: TargetOutcomeFailure, Elapsed: 3 * time.Second},
+	want := []progress.Event{
+		{Kind: progress.KindTargetStarted, Mode: "detect", Target: cfg.Targets[0], TargetIndex: 1, TotalTargets: 2},
+		{Kind: progress.KindStageStarted, Mode: "detect", Target: cfg.Targets[0], TargetIndex: 1, TotalTargets: 2, Stage: progress.StagePlanning, TotalDependencies: 1},
+		{Kind: progress.KindDependencyChecked, Mode: "detect", Target: cfg.Targets[0], TargetIndex: 1, TotalTargets: 2, Stage: progress.StagePlanning, DependenciesCompleted: 1, TotalDependencies: 1, ModulePath: "example.com/one"},
+		{Kind: progress.KindTargetFinished, Mode: "detect", Target: cfg.Targets[0], TargetIndex: 1, TotalTargets: 2, Outcome: progress.TargetOutcomeSuccess, Elapsed: time.Second},
+		{Kind: progress.KindTargetStarted, Mode: "detect", Target: cfg.Targets[1], TargetIndex: 2, TotalTargets: 2},
+		{Kind: progress.KindTargetFinished, Mode: "detect", Target: cfg.Targets[1], TargetIndex: 2, TotalTargets: 2, Outcome: progress.TargetOutcomeFailure, Elapsed: 3 * time.Second},
 	}
-	if len(reporter.events) != len(want) {
-		t.Fatalf("events = %+v, want %d events", reporter.events, len(want))
-	}
-	for i, event := range reporter.events {
-		assertTargetProgressEqual(t, i, event, want[i])
-	}
+	assertEventsEqual(t, reporter.events, want)
 }
 
-func TestApplyReportsSelectedTargetProgressAndFailures(t *testing.T) {
+func TestApplyReportsPlanningAndMutationProgressForSelectedTarget(t *testing.T) {
 	reporter := &recordingReporter{}
 	adapter := &fakeGoAdapter{
 		plansByTarget: map[string]core.TargetPlan{
 			"first": {
-				Decisions: []core.Decision{
-					{
-						ModulePath:       "example.com/lib",
-						CurrentVersion:   "v1.0.0",
-						CandidateVersion: "v1.1.0",
-						Eligible:         true,
-					},
-				},
+				Decisions: []core.Decision{{
+					ModulePath:       "example.com/lib",
+					CurrentVersion:   "v1.0.0",
+					CandidateVersion: "v1.1.0",
+					Eligible:         true,
+				}},
 			},
 			"second": {
-				Decisions: []core.Decision{
-					{
-						ModulePath:       "example.com/lib",
-						CurrentVersion:   "v1.0.0",
-						CandidateVersion: "v1.1.0",
-						Eligible:         true,
-					},
-				},
+				Decisions: []core.Decision{{
+					ModulePath:       "example.com/lib",
+					CurrentVersion:   "v1.0.0",
+					CandidateVersion: "v1.1.0",
+					Eligible:         true,
+				}},
+			},
+		},
+		planProgressByTarget: map[string][]progress.PlanUpdate{
+			"second": {
+				{Kind: progress.PlanKindStarted, TotalDependencies: 1},
+				{Kind: progress.PlanKindChecked, DependenciesCompleted: 1, TotalDependencies: 1, ModulePath: "example.com/lib"},
 			},
 		},
 		beforeByTarget: map[string]map[string]string{
@@ -202,29 +207,28 @@ func TestApplyReportsSelectedTargetProgressAndFailures(t *testing.T) {
 		t.Fatalf("applied calls = %+v, want one call for selected target", adapter.applied)
 	}
 
-	want := []TargetProgress{
-		{Mode: "apply", Target: cfg.Targets[1]},
-		{Mode: "apply", Target: cfg.Targets[1], Outcome: TargetOutcomeFailure, Elapsed: 2 * time.Second},
+	want := []progress.Event{
+		{Kind: progress.KindTargetStarted, Mode: "apply", Target: cfg.Targets[1], TargetIndex: 1, TotalTargets: 1},
+		{Kind: progress.KindStageStarted, Mode: "apply", Target: cfg.Targets[1], TargetIndex: 1, TotalTargets: 1, Stage: progress.StagePlanning, TotalDependencies: 1},
+		{Kind: progress.KindDependencyChecked, Mode: "apply", Target: cfg.Targets[1], TargetIndex: 1, TotalTargets: 1, Stage: progress.StagePlanning, DependenciesCompleted: 1, TotalDependencies: 1, ModulePath: "example.com/lib"},
+		{Kind: progress.KindStageStarted, Mode: "apply", Target: cfg.Targets[1], TargetIndex: 1, TotalTargets: 1, Stage: progress.StageMutating, TotalMutations: 1},
+		{Kind: progress.KindTargetFinished, Mode: "apply", Target: cfg.Targets[1], TargetIndex: 1, TotalTargets: 1, Outcome: progress.TargetOutcomeFailure, Elapsed: 2 * time.Second},
 	}
-	if len(reporter.events) != len(want) {
-		t.Fatalf("events = %+v, want %d events", reporter.events, len(want))
-	}
-	for i, event := range reporter.events {
-		assertTargetProgressEqual(t, i, event, want[i])
-	}
+	assertEventsEqual(t, reporter.events, want)
 }
 
 type fakeGoAdapter struct {
-	plan                core.TargetPlan
-	plansByTarget       map[string]core.TargetPlan
-	before              map[string]string
-	beforeByTarget      map[string]map[string]string
-	after               map[string]string
-	afterByTarget       map[string]map[string]string
-	directVersionErrors map[string]error
-	applyErrorsByTarget map[string]error
-	applied             []applyCall
-	planned             []config.Target
+	plan                 core.TargetPlan
+	plansByTarget        map[string]core.TargetPlan
+	planProgressByTarget map[string][]progress.PlanUpdate
+	before               map[string]string
+	beforeByTarget       map[string]map[string]string
+	after                map[string]string
+	afterByTarget        map[string]map[string]string
+	directVersionErrors  map[string]error
+	applyErrorsByTarget  map[string]error
+	applied              []applyCall
+	planned              []config.Target
 }
 
 type applyCall struct {
@@ -237,8 +241,14 @@ func (a *fakeGoAdapter) CheckPrereq() error {
 	return nil
 }
 
-func (a *fakeGoAdapter) PlanTarget(_ context.Context, target config.Target) core.TargetPlan {
+func (a *fakeGoAdapter) PlanTarget(_ context.Context, target config.Target, reports ...func(progress.PlanUpdate)) core.TargetPlan {
 	a.planned = append(a.planned, target)
+	report := firstPlanReport(reports)
+	for _, update := range a.planProgressByTarget[target.Name] {
+		if report != nil {
+			report(update)
+		}
+	}
 	if plan, ok := a.plansByTarget[target.Name]; ok {
 		return plan
 	}
@@ -278,14 +288,10 @@ func (a *fakeGoAdapter) DirectVersions(target config.Target) (map[string]string,
 }
 
 type recordingReporter struct {
-	events []TargetProgress
+	events []progress.Event
 }
 
-func (r *recordingReporter) TargetStarted(event TargetProgress) {
-	r.events = append(r.events, event)
-}
-
-func (r *recordingReporter) TargetFinished(event TargetProgress) {
+func (r *recordingReporter) Report(event progress.Event) {
 	r.events = append(r.events, event)
 }
 
@@ -320,13 +326,34 @@ func countAppliedForTarget(calls []applyCall, target string) int {
 	return count
 }
 
-func assertTargetProgressEqual(t *testing.T, index int, got TargetProgress, want TargetProgress) {
+func assertEventsEqual(t *testing.T, got []progress.Event, want []progress.Event) {
 	t.Helper()
-	if got.Mode != want.Mode ||
-		got.Target.Name != want.Target.Name ||
-		got.Target.NormalizedPath != want.Target.NormalizedPath ||
-		got.Outcome != want.Outcome ||
-		got.Elapsed != want.Elapsed {
-		t.Fatalf("event[%d] = %+v, want %+v", index, got, want)
+	if len(got) != len(want) {
+		t.Fatalf("events = %+v, want %d events", got, len(want))
 	}
+	for i := range want {
+		if got[i].Kind != want[i].Kind ||
+			got[i].Mode != want[i].Mode ||
+			got[i].Target.Name != want[i].Target.Name ||
+			got[i].Target.NormalizedPath != want[i].Target.NormalizedPath ||
+			got[i].TargetIndex != want[i].TargetIndex ||
+			got[i].TotalTargets != want[i].TotalTargets ||
+			got[i].Stage != want[i].Stage ||
+			got[i].DependenciesCompleted != want[i].DependenciesCompleted ||
+			got[i].TotalDependencies != want[i].TotalDependencies ||
+			got[i].MutationsCompleted != want[i].MutationsCompleted ||
+			got[i].TotalMutations != want[i].TotalMutations ||
+			got[i].ModulePath != want[i].ModulePath ||
+			got[i].Outcome != want[i].Outcome ||
+			got[i].Elapsed != want[i].Elapsed {
+			t.Fatalf("event[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func firstPlanReport(reports []func(progress.PlanUpdate)) func(progress.PlanUpdate) {
+	if len(reports) == 0 {
+		return nil
+	}
+	return reports[0]
 }

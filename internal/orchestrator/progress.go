@@ -1,31 +1,35 @@
 package orchestrator
 
-import (
-	"time"
+import "github.com/mishankov/updtr/internal/progress"
 
-	"github.com/mishankov/updtr/internal/config"
-)
-
-type TargetOutcome string
+type ProgressEvent = progress.Event
+type PlanProgress = progress.PlanUpdate
+type TargetOutcome = progress.TargetOutcome
+type ProgressKind = progress.Kind
+type ProgressStage = progress.Stage
+type PlanProgressKind = progress.PlanKind
 
 const (
-	TargetOutcomeSuccess TargetOutcome = "success"
-	TargetOutcomeFailure TargetOutcome = "failure"
+	TargetOutcomeSuccess = progress.TargetOutcomeSuccess
+	TargetOutcomeFailure = progress.TargetOutcomeFailure
+
+	ProgressTargetStarted     = progress.KindTargetStarted
+	ProgressStageStarted      = progress.KindStageStarted
+	ProgressDependencyChecked = progress.KindDependencyChecked
+	ProgressMutationProcessed = progress.KindMutationProcessed
+	ProgressTargetFinished    = progress.KindTargetFinished
+
+	StagePlanning = progress.StagePlanning
+	StageMutating = progress.StageMutating
+
+	PlanProgressStarted = progress.PlanKindStarted
+	PlanProgressChecked = progress.PlanKindChecked
 )
 
-type TargetProgress struct {
-	Mode    string
-	Target  config.Target
-	Outcome TargetOutcome
-	Elapsed time.Duration
-}
-
 type ProgressReporter interface {
-	TargetStarted(TargetProgress)
-	TargetFinished(TargetProgress)
+	Report(progress.Event)
 }
 
 type nopProgressReporter struct{}
 
-func (nopProgressReporter) TargetStarted(TargetProgress)  {}
-func (nopProgressReporter) TargetFinished(TargetProgress) {}
+func (nopProgressReporter) Report(progress.Event) {}

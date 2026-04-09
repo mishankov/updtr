@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"github.com/mishankov/updtr/internal/config"
+	"github.com/mishankov/updtr/internal/core"
 	"github.com/mishankov/updtr/internal/initgen"
 	"github.com/mishankov/updtr/internal/orchestrator"
-	"github.com/mishankov/updtr/internal/render"
 	"github.com/spf13/cobra"
 )
 
@@ -60,28 +60,20 @@ func New(version string, out io.Writer, errOut io.Writer) *cobra.Command {
 		},
 	})
 
-	root.AddCommand(runCommand("detect", "Detect dependency updates", out, func(engine *orchestrator.Engine, cfg *config.Config, targets []string) (bool, error) {
+	root.AddCommand(runCommand("detect", "Detect dependency updates", out, func(engine *orchestrator.Engine, cfg *config.Config, targets []string) (core.RunResult, error) {
 		result, err := engine.Detect(root.Context(), cfg, targets)
-		if err != nil {
-			return false, err
-		}
-		render.Detect(out, result)
-		return result.HasOperationalFailures(), nil
+		return result, err
 	}, &configPath))
 
-	root.AddCommand(runCommand("apply", "Apply eligible dependency updates", out, func(engine *orchestrator.Engine, cfg *config.Config, targets []string) (bool, error) {
+	root.AddCommand(runCommand("apply", "Apply eligible dependency updates", out, func(engine *orchestrator.Engine, cfg *config.Config, targets []string) (core.RunResult, error) {
 		result, err := engine.Apply(root.Context(), cfg, targets)
-		if err != nil {
-			return false, err
-		}
-		render.Apply(out, result)
-		return result.HasOperationalFailures(), nil
+		return result, err
 	}, &configPath))
 
 	return root
 }
 
-func runCommand(use string, short string, out io.Writer, run func(*orchestrator.Engine, *config.Config, []string) (bool, error), configPath *string) *cobra.Command {
+func runCommand(use string, short string, out io.Writer, run func(*orchestrator.Engine, *config.Config, []string) (core.RunResult, error), configPath *string) *cobra.Command {
 	var targets []string
 	cmd := &cobra.Command{
 		Use:   use,
@@ -92,12 +84,14 @@ func runCommand(use string, short string, out io.Writer, run func(*orchestrator.
 				return err
 			}
 			engine := newEngine()
-			engine.Reporter = newProgressWriter(out)
-			hasFailures, err := run(engine, cfg, targets)
+			presenter := newRunPresenter(out)
+			engine.Reporter = presenter
+			result, err := run(engine, cfg, targets)
 			if err != nil {
 				return err
 			}
-			if hasFailures {
+			presenter.Render(result)
+			if result.HasOperationalFailures() {
 				return silentExit{}
 			}
 			return nil

@@ -1,0 +1,6 @@
+policy:
+  quarantine_days: 7
+targets:
+  - name: "root"
+    ecosystem: "go"
+    path: "."

@@ -15,6 +15,7 @@ import (
 	"github.com/mishankov/updtr/internal/config"
 	"github.com/mishankov/updtr/internal/core"
 	"github.com/mishankov/updtr/internal/policy"
+	"github.com/mishankov/updtr/internal/progress"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 )
@@ -37,8 +38,9 @@ func (a *Adapter) CheckPrereq() error {
 	return nil
 }
 
-func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.TargetPlan {
+func (a *Adapter) PlanTarget(ctx context.Context, target config.Target, reports ...func(progress.PlanUpdate)) core.TargetPlan {
 	plan := core.TargetPlan{Target: target}
+	report := firstPlanReporter(reports)
 	if err := validatePins(target.Policy.Pins); err != nil {
 		plan.Error = err.Error()
 		return plan
@@ -61,9 +63,20 @@ func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.Tar
 	}
 
 	now := a.now()
-	for _, requirement := range state.Requirements(target.IncludeIndirect) {
+	requirements := state.Requirements(target.IncludeIndirect)
+	reportPlanProgress(report, progress.PlanUpdate{
+		Kind:              progress.PlanKindStarted,
+		TotalDependencies: len(requirements),
+	})
+	for i, requirement := range requirements {
 		relevantVulnerabilities := relevantVulnerabilitiesForRequirement(vulnerabilities, requirement)
 		if target.Policy.UpdateMode == config.UpdateModeVulnerabilityOnly && len(relevantVulnerabilities) == 0 {
+			reportPlanProgress(report, progress.PlanUpdate{
+				Kind:                  progress.PlanKindChecked,
+				DependenciesCompleted: i + 1,
+				TotalDependencies:     len(requirements),
+				ModulePath:            requirement.Path,
+			})
 			continue
 		}
 
@@ -76,6 +89,12 @@ func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.Tar
 				BlockedReason:   core.ReasonReplacedDependency,
 			}
 			plan.Decisions = append(plan.Decisions, decision)
+			reportPlanProgress(report, progress.PlanUpdate{
+				Kind:                  progress.PlanKindChecked,
+				DependenciesCompleted: i + 1,
+				TotalDependencies:     len(requirements),
+				ModulePath:            requirement.Path,
+			})
 			continue
 		}
 
@@ -92,6 +111,12 @@ func (a *Adapter) PlanTarget(ctx context.Context, target config.Target) core.Tar
 			}
 			plan.Decisions = append(plan.Decisions, decision)
 		}
+		reportPlanProgress(report, progress.PlanUpdate{
+			Kind:                  progress.PlanKindChecked,
+			DependenciesCompleted: i + 1,
+			TotalDependencies:     len(requirements),
+			ModulePath:            requirement.Path,
+		})
 	}
 	return plan
 }
@@ -124,6 +149,19 @@ func (a *Adapter) scanner() VulnerabilityScanner {
 		return a.vulnerabilityScanner
 	}
 	return GovulncheckScanner{}
+}
+
+func reportPlanProgress(report func(progress.PlanUpdate), update progress.PlanUpdate) {
+	if report != nil {
+		report(update)
+	}
+}
+
+func firstPlanReporter(reports []func(progress.PlanUpdate)) func(progress.PlanUpdate) {
+	if len(reports) == 0 {
+		return nil
+	}
+	return reports[0]
 }
 
 type moduleState struct {
