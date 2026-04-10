@@ -1,0 +1,23 @@
+name: updtr
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  updtr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run updtr
+        uses: mishankov/updtr@main
+        with:
+          github-token: ${{ github.token }}
