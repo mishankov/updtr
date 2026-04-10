@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/mishankov/updtr/internal/action"
 	"github.com/mishankov/updtr/internal/config"
 	"github.com/mishankov/updtr/internal/core"
 	"github.com/mishankov/updtr/internal/initgen"
@@ -57,6 +58,16 @@ func New(version string, out io.Writer, errOut io.Writer) *cobra.Command {
 			}
 			_, _ = io.WriteString(out, message)
 			return nil
+		},
+	})
+
+	root.AddCommand(&cobra.Command{
+		Use:    "action",
+		Short:  "Run the GitHub Action entrypoint",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := action.Run(cmd.Context(), action.ConfigFromEnv(), out, errOut)
+			return err
 		},
 	})
 

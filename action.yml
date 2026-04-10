@@ -1,0 +1,42 @@
+name: updtr
+description: Apply eligible dependency updates and create or update a managed pull request.
+inputs:
+  github-token:
+    description: GitHub token used for pull request create-or-update calls.
+    required: false
+  config:
+    description: Path to the updtr YAML config file.
+    required: false
+  targets:
+    description: Comma- or newline-separated target names to pass as --target.
+    required: false
+  base-branch:
+    description: Base branch for the managed pull request and update run. Defaults to the workflow ref.
+    required: false
+  commit-message:
+    description: Commit message used for the managed update branch.
+    required: false
+    default: "chore(deps): update dependencies with updtr"
+  pull-request-title:
+    description: Title used for the managed pull request.
+    required: false
+    default: "chore(deps): update dependencies with updtr"
+outputs:
+  changed:
+    description: Whether updtr produced repository changes.
+  committed:
+    description: Whether the action committed and pushed an update branch.
+  branch:
+    description: Managed branch name used for the update run when changes were produced.
+  pull_request_operation:
+    description: "Pull request outcome: none, created, or updated."
+  pull_request_number:
+    description: Pull request number when a pull request was created or updated.
+  pull_request_url:
+    description: Pull request URL when a pull request was created or updated.
+runs:
+  using: docker
+  image: Dockerfile
+branding:
+  icon: package
+  color: blue
