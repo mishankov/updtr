@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,33 @@ func TestApplyArgsIncludesConfigFlagWhenConfigPathIsSet(t *testing.T) {
 
 	if strings.Join(args, " ") != "apply --config configs/updtr.yml" {
 		t.Fatalf("args = %#v, want apply with explicit config flag", args)
+	}
+}
+
+func TestCommandGitPrefixesCommandsWithSafeDirectory(t *testing.T) {
+	ctx := context.Background()
+	runner := &recordingGitRunner{}
+	g := commandGit{
+		runner:        runner,
+		safeDirectory: "/github/workspace",
+	}
+
+	if _, err := g.trackedStatus(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"-c",
+		"safe.directory=/github/workspace",
+		"status",
+		"--porcelain",
+		"--untracked-files=no",
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("git calls = %d, want 1", len(runner.calls))
+	}
+	if !reflect.DeepEqual(runner.calls[0], want) {
+		t.Fatalf("git args = %#v, want %#v", runner.calls[0], want)
 	}
 }
 
@@ -280,4 +308,13 @@ func runGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 	}
 	return string(out)
+}
+
+type recordingGitRunner struct {
+	calls [][]string
+}
+
+func (r *recordingGitRunner) CombinedOutput(_ context.Context, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string(nil), args...))
+	return []byte(""), nil
 }

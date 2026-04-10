@@ -60,11 +60,19 @@ func (execGitRunner) CombinedOutput(ctx context.Context, args ...string) ([]byte
 }
 
 type commandGit struct {
-	runner gitRunner
+	runner        gitRunner
+	safeDirectory string
 }
 
 func newCommandGit() commandGit {
-	return commandGit{runner: execGitRunner{}}
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = ""
+	}
+	return commandGit{
+		runner:        execGitRunner{},
+		safeDirectory: wd,
+	}
 }
 
 func (g commandGit) EnsureClean(ctx context.Context) error {
@@ -167,7 +175,7 @@ func (g commandGit) trackedStatus(ctx context.Context) (string, error) {
 
 func (g commandGit) remoteRefOID(ctx context.Context, remote string, ref string) (string, bool, error) {
 	args := []string{"ls-remote", "--exit-code", remote, ref}
-	out, err := g.runner.CombinedOutput(ctx, args...)
+	out, err := g.runner.CombinedOutput(ctx, g.gitArgs(args)...)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
@@ -183,7 +191,7 @@ func (g commandGit) remoteRefOID(ctx context.Context, remote string, ref string)
 }
 
 func (g commandGit) output(ctx context.Context, args ...string) (string, error) {
-	out, err := g.runner.CombinedOutput(ctx, args...)
+	out, err := g.runner.CombinedOutput(ctx, g.gitArgs(args)...)
 	if err != nil {
 		return "", gitError(args, out, err)
 	}
@@ -193,6 +201,13 @@ func (g commandGit) output(ctx context.Context, args ...string) (string, error) 
 func (g commandGit) run(ctx context.Context, args ...string) error {
 	_, err := g.output(ctx, args...)
 	return err
+}
+
+func (g commandGit) gitArgs(args []string) []string {
+	if g.safeDirectory == "" {
+		return args
+	}
+	return append([]string{"-c", "safe.directory=" + g.safeDirectory}, args...)
 }
 
 func gitError(args []string, out []byte, err error) error {
