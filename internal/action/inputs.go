@@ -15,15 +15,23 @@ var branchLabelPattern = regexp.MustCompile(`[^a-z0-9-]+`)
 
 func ConfigFromEnv() Config {
 	return Config{
-		ConfigPath:       os.Getenv("INPUT_CONFIG"),
-		Targets:          parseTargets(os.Getenv("INPUT_TARGETS")),
-		CommitMessage:    firstNonEmpty(os.Getenv("INPUT_COMMIT_MESSAGE"), DefaultCommitMessage),
-		PullRequestTitle: firstNonEmpty(os.Getenv("INPUT_PULL_REQUEST_TITLE"), DefaultPullRequestTitle),
-		BaseBranch:       firstNonEmpty(os.Getenv("INPUT_BASE_BRANCH"), os.Getenv("GITHUB_BASE_REF"), os.Getenv("GITHUB_REF_NAME")),
+		ConfigPath:       actionInput("config"),
+		Targets:          parseTargets(actionInput("targets")),
+		CommitMessage:    firstNonEmpty(actionInput("commit-message"), DefaultCommitMessage),
+		PullRequestTitle: firstNonEmpty(actionInput("pull-request-title"), DefaultPullRequestTitle),
+		BaseBranch:       firstNonEmpty(actionInput("base-branch"), os.Getenv("GITHUB_BASE_REF"), os.Getenv("GITHUB_REF_NAME")),
 		Repository:       os.Getenv("GITHUB_REPOSITORY"),
-		GitHubToken:      os.Getenv("INPUT_GITHUB_TOKEN"),
+		GitHubToken:      firstNonEmpty(actionInput("github-token"), os.Getenv("GITHUB_TOKEN")),
 		OutputPath:       os.Getenv("GITHUB_OUTPUT"),
 	}
+}
+
+func actionInput(name string) string {
+	upper := strings.ToUpper(name)
+	return firstNonEmpty(
+		os.Getenv("INPUT_"+upper),
+		os.Getenv("INPUT_"+strings.ReplaceAll(upper, "-", "_")),
+	)
 }
 
 func ManagedBranchName(configPath string, targets []string, baseBranch string) string {

@@ -33,6 +33,9 @@ func TestConfigFromEnvUsesGitHubActionDefaults(t *testing.T) {
 	if cfg.BaseBranch != "main" {
 		t.Fatalf("base branch = %q, want main", cfg.BaseBranch)
 	}
+	if cfg.GitHubToken != "secret" {
+		t.Fatalf("github token = %q, want secret", cfg.GitHubToken)
+	}
 }
 
 func TestManagedBranchNameIsDeterministicAcrossTargetOrder(t *testing.T) {
@@ -41,5 +44,28 @@ func TestManagedBranchNameIsDeterministicAcrossTargetOrder(t *testing.T) {
 
 	if first != second {
 		t.Fatalf("branch names differ: %q != %q", first, second)
+	}
+}
+
+func TestConfigFromEnvSupportsHyphenatedDockerActionInputNames(t *testing.T) {
+	t.Setenv("INPUT_CONFIG", "updtr.yml")
+	t.Setenv("INPUT_TARGETS", "root")
+	t.Setenv("INPUT_COMMIT-MESSAGE", "custom commit")
+	t.Setenv("INPUT_PULL-REQUEST-TITLE", "custom title")
+	t.Setenv("INPUT_BASE-BRANCH", "release/1.x")
+	t.Setenv("INPUT_GITHUB-TOKEN", "secret")
+
+	cfg := ConfigFromEnv()
+	if cfg.CommitMessage != "custom commit" {
+		t.Fatalf("commit message = %q, want custom commit", cfg.CommitMessage)
+	}
+	if cfg.PullRequestTitle != "custom title" {
+		t.Fatalf("pull request title = %q, want custom title", cfg.PullRequestTitle)
+	}
+	if cfg.BaseBranch != "release/1.x" {
+		t.Fatalf("base branch = %q, want release/1.x", cfg.BaseBranch)
+	}
+	if cfg.GitHubToken != "secret" {
+		t.Fatalf("github token = %q, want secret", cfg.GitHubToken)
 	}
 }
