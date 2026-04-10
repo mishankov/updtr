@@ -25,7 +25,7 @@ func TestDockerActionImageRunsAgainstCommittedSampleRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := initGitRepo(t)
-	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/sample\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/sample\n\ngo 1.25.0\n")
 	writeFile(t, filepath.Join(repo, "updtr.yaml"), "targets:\n  - name: root\n    ecosystem: go\n    path: .\n")
 	runGit(t, repo, "add", "go.mod", "updtr.yaml")
 	runGit(t, repo, "commit", "-m", "sample repo")

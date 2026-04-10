@@ -24,7 +24,7 @@ Prebuilt binaries are published on the [GitHub Releases](https://github.com/mish
 
 ## Requirements
 
-- Go 1.23+
+- Go 1.25+
 - a directory containing one or more Go modules
 
 ## Quick start

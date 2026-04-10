@@ -97,7 +97,7 @@ func touch(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("module example.com/test\n\ngo 1.23\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("module example.com/test\n\ngo 1.25.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
