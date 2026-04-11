@@ -5,48 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 )
-
-type executableRunner struct {
-	path   string
-	stdout io.Writer
-	stderr io.Writer
-}
-
-func newExecutableRunner(stdout io.Writer, stderr io.Writer) (*executableRunner, error) {
-	path, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("resolve updtr executable: %w", err)
-	}
-	return &executableRunner{path: path, stdout: stdout, stderr: stderr}, nil
-}
-
-func (r *executableRunner) Apply(ctx context.Context, opts RunOptions) error {
-	args := applyArgs(opts)
-	for _, target := range opts.Targets {
-		args = append(args, "--target", target)
-	}
-	cmd := exec.CommandContext(ctx, r.path, args...)
-	cmd.Stdout = r.stdout
-	cmd.Stderr = r.stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run updtr apply: %w", err)
-	}
-	return nil
-}
-
-func applyArgs(opts RunOptions) []string {
-	args := []string{"apply"}
-	if opts.ConfigPath != "" {
-		args = append(args, "--config", opts.ConfigPath)
-	}
-	return args
-}
 
 type gitRunner interface {
 	CombinedOutput(context.Context, ...string) ([]byte, error)

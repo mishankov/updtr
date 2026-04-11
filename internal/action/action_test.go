@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/mishankov/updtr/internal/config"
+	"github.com/mishankov/updtr/internal/core"
 )
 
 func TestRuntimeNoopRunWritesNoopOutputs(t *testing.T) {
@@ -14,7 +17,7 @@ func TestRuntimeNoopRunWritesNoopOutputs(t *testing.T) {
 	runtime := Runtime{
 		Runner:       runner,
 		Git:          &fakeGit{},
-		PullRequests: fakePullRequests{},
+		PullRequests: &fakePullRequests{},
 		Outputs:      outputsWriter,
 	}
 
@@ -41,11 +44,24 @@ func TestRuntimeNoopRunWritesNoopOutputs(t *testing.T) {
 
 func TestRuntimeChangedRunCommitsPushesAndCreatesPullRequest(t *testing.T) {
 	git := &fakeGit{hasChanges: true, stagedChanges: true}
-	prs := fakePullRequests{
+	prs := &fakePullRequests{
 		result: PullRequestResult{Operation: PROperationCreated, Number: 42, URL: "https://example.com/pr/42"},
 	}
 	outputsWriter := &recordingOutputs{}
-	runner := &fakeRunner{git: git}
+	runner := &fakeRunner{
+		git: git,
+		result: core.RunResult{
+			Mode: "apply",
+			Targets: []core.TargetResult{{
+				Target: config.Target{Name: "worker", NormalizedPath: "worker"},
+				Applied: []core.AppliedUpdate{{
+					ModulePath:  "github.com/example/mod",
+					FromVersion: "v1.0.0",
+					ToVersion:   "v1.1.0",
+				}},
+			}},
+		},
+	}
 	runtime := Runtime{
 		Runner:       runner,
 		Git:          git,
@@ -99,6 +115,15 @@ func TestRuntimeChangedRunCommitsPushesAndCreatesPullRequest(t *testing.T) {
 	if !outputsWriter.called {
 		t.Fatal("outputs writer was not called")
 	}
+	if prs.request.Title != "custom title" {
+		t.Fatalf("pull request title = %q, want custom title", prs.request.Title)
+	}
+	if !strings.Contains(prs.request.Body, "github.com/example/mod") {
+		t.Fatalf("pull request body = %q, want applied update details", prs.request.Body)
+	}
+	if !strings.Contains(prs.request.Body, "1 dependency update updated") {
+		t.Fatalf("pull request body = %q, want summary counts", prs.request.Body)
+	}
 }
 
 func TestRuntimeChangedRunStagesNewFilesCreatedByApply(t *testing.T) {
@@ -110,7 +135,7 @@ func TestRuntimeChangedRunStagesNewFilesCreatedByApply(t *testing.T) {
 	runtime := Runtime{
 		Runner:       &fakeRunner{},
 		Git:          git,
-		PullRequests: fakePullRequests{result: PullRequestResult{Operation: PROperationCreated, Number: 7, URL: "https://example.com/pr/7"}},
+		PullRequests: &fakePullRequests{result: PullRequestResult{Operation: PROperationCreated, Number: 7, URL: "https://example.com/pr/7"}},
 		Outputs:      &recordingOutputs{},
 	}
 
@@ -138,7 +163,7 @@ func TestRuntimeChangedRunFailsBeforeGitSideEffectsWhenTokenIsMissing(t *testing
 	runtime := Runtime{
 		Runner:       &fakeRunner{},
 		Git:          git,
-		PullRequests: fakePullRequests{},
+		PullRequests: &fakePullRequests{},
 		Outputs:      &recordingOutputs{},
 	}
 
@@ -163,7 +188,7 @@ func TestRuntimeChecksOutBaseBranchBeforeApply(t *testing.T) {
 	runtime := Runtime{
 		Runner:       runner,
 		Git:          git,
-		PullRequests: fakePullRequests{},
+		PullRequests: &fakePullRequests{},
 		Outputs:      &recordingOutputs{},
 	}
 
@@ -186,7 +211,7 @@ func TestRuntimePropagatesBaseBranchCheckoutFailures(t *testing.T) {
 	runtime := Runtime{
 		Runner:       &fakeRunner{},
 		Git:          git,
-		PullRequests: fakePullRequests{},
+		PullRequests: &fakePullRequests{},
 		Outputs:      &recordingOutputs{},
 	}
 
@@ -205,7 +230,7 @@ func TestRuntimePropagatesPushFailures(t *testing.T) {
 	runtime := Runtime{
 		Runner:       &fakeRunner{},
 		Git:          git,
-		PullRequests: fakePullRequests{},
+		PullRequests: &fakePullRequests{},
 		Outputs:      &recordingOutputs{},
 	}
 
@@ -224,34 +249,35 @@ type fakeRunner struct {
 	git                  *fakeGit
 	opts                 RunOptions
 	applySawBaseCheckout bool
+	result               core.RunResult
 }
 
-func (r *fakeRunner) Apply(_ context.Context, opts RunOptions) error {
+func (r *fakeRunner) Apply(_ context.Context, opts RunOptions) (core.RunResult, error) {
 	r.opts = opts
 	if r.git != nil {
 		r.applySawBaseCheckout = r.git.checkedOutBaseBranch != ""
 	}
 	if r.err != nil {
-		return r.err
+		return core.RunResult{}, r.err
 	}
-	return nil
+	return r.result, nil
 }
 
 type fakeGit struct {
-	cleanErr              error
-	hasChanges            bool
-	hasChangesErr         error
-	initialUntracked      []string
-	currentUntracked      []string
-	untrackedCalls        int
-	stagedChanges         bool
-	stagedErr             error
-	checkoutBaseErr       error
-	checkoutErr           error
-	configureErr          error
-	stageErr              error
-	commitErr             error
-	pushErr               error
+	cleanErr             error
+	hasChanges           bool
+	hasChangesErr        error
+	initialUntracked     []string
+	currentUntracked     []string
+	untrackedCalls       int
+	stagedChanges        bool
+	stagedErr            error
+	checkoutBaseErr      error
+	checkoutErr          error
+	configureErr         error
+	stageErr             error
+	commitErr            error
+	pushErr              error
 	checkedOutBaseBranch string
 	checkedOutBranch     string
 	commitMessage        string
@@ -309,11 +335,13 @@ func (g *fakeGit) Push(_ context.Context, branch string) error {
 }
 
 type fakePullRequests struct {
-	result PullRequestResult
-	err    error
+	result  PullRequestResult
+	err     error
+	request PullRequestRequest
 }
 
-func (p fakePullRequests) Ensure(context.Context, PullRequestRequest) (PullRequestResult, error) {
+func (p *fakePullRequests) Ensure(_ context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	p.request = req
 	if p.err != nil {
 		return PullRequestResult{}, p.err
 	}

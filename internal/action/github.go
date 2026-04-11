@@ -91,7 +91,7 @@ func (c *githubClient) create(ctx context.Context, req PullRequestRequest) (gith
 		"title": req.Title,
 		"head":  req.HeadBranch,
 		"base":  req.BaseBranch,
-		"body":  "Created by the updtr GitHub Action.",
+		"body":  req.Body,
 	}
 	request, err := c.newRequest(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/pulls", c.baseURL, req.Repository), req.Token, body)
 	if err != nil {
@@ -105,7 +105,10 @@ func (c *githubClient) create(ctx context.Context, req PullRequestRequest) (gith
 }
 
 func (c *githubClient) update(ctx context.Context, req PullRequestRequest, number int) (githubPullRequest, error) {
-	body := map[string]string{"title": req.Title}
+	body := map[string]string{
+		"title": req.Title,
+		"body":  req.Body,
+	}
 	request, err := c.newRequest(ctx, http.MethodPatch, fmt.Sprintf("%s/repos/%s/pulls/%d", c.baseURL, req.Repository, number), req.Token, body)
 	if err != nil {
 		return githubPullRequest{}, err

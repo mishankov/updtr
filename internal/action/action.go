@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+
+	"github.com/mishankov/updtr/internal/core"
 )
 
 const (
@@ -42,7 +44,7 @@ type RunOptions struct {
 }
 
 type UpdtrRunner interface {
-	Apply(context.Context, RunOptions) error
+	Apply(context.Context, RunOptions) (core.RunResult, error)
 }
 
 type GitClient interface {
@@ -64,6 +66,7 @@ type PullRequestRequest struct {
 	BaseBranch string
 	HeadBranch string
 	Title      string
+	Body       string
 }
 
 type PullRequestResult struct {
@@ -126,10 +129,11 @@ func (r Runtime) Run(ctx context.Context, cfg Config) (Outputs, error) {
 	} else {
 		r.logf("Running updtr apply with config %q\n", cfg.ConfigPath)
 	}
-	if err := r.Runner.Apply(ctx, RunOptions{
+	result, err := r.Runner.Apply(ctx, RunOptions{
 		ConfigPath: cfg.ConfigPath,
 		Targets:    cfg.Targets,
-	}); err != nil {
+	})
+	if err != nil {
 		return outputs, err
 	}
 
@@ -181,12 +185,14 @@ func (r Runtime) Run(ctx context.Context, cfg Config) (Outputs, error) {
 		return outputs, err
 	}
 
+	body := RenderPullRequestBody(result)
 	prResult, err := r.PullRequests.Ensure(ctx, PullRequestRequest{
 		Repository: cfg.Repository,
 		Token:      cfg.GitHubToken,
 		BaseBranch: cfg.BaseBranch,
 		HeadBranch: outputs.Branch,
 		Title:      cfg.PullRequestTitle,
+		Body:       body,
 	})
 	if err != nil {
 		return outputs, err

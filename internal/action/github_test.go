@@ -34,6 +34,7 @@ func TestGitHubClientCreatesPullRequestWhenMissing(t *testing.T) {
 		BaseBranch: "main",
 		HeadBranch: "updtr/all-123",
 		Title:      "deps",
+		Body:       "generated body",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -44,16 +45,21 @@ func TestGitHubClientCreatesPullRequestWhenMissing(t *testing.T) {
 	if createBody["head"] != "updtr/all-123" || createBody["title"] != "deps" {
 		t.Fatalf("create body = %+v", createBody)
 	}
+	if createBody["body"] != "generated body" {
+		t.Fatalf("create body = %+v, want generated body text", createBody)
+	}
 }
 
 func TestGitHubClientUpdatesExistingPullRequest(t *testing.T) {
-	var patched bool
+	var patchBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/mishankov/updtr/pulls":
 			_ = json.NewEncoder(w).Encode([]githubPullRequest{{Number: 9, URL: "https://example.com/pr/9"}})
 		case r.Method == http.MethodPatch && r.URL.Path == "/repos/mishankov/updtr/pulls/9":
-			patched = true
+			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
+				t.Fatal(err)
+			}
 			_ = json.NewEncoder(w).Encode(githubPullRequest{Number: 9, URL: "https://example.com/pr/9"})
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -70,12 +76,13 @@ func TestGitHubClientUpdatesExistingPullRequest(t *testing.T) {
 		BaseBranch: "main",
 		HeadBranch: "updtr/all-123",
 		Title:      "deps",
+		Body:       "generated body",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !patched {
-		t.Fatal("existing pull request was not updated")
+	if patchBody["title"] != "deps" || patchBody["body"] != "generated body" {
+		t.Fatalf("patch body = %+v", patchBody)
 	}
 	if result.Operation != PROperationUpdated || result.Number != 9 {
 		t.Fatalf("result = %+v, want updated pull request", result)

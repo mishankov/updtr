@@ -1,5 +1,5 @@
 name: updtr
-description: Apply eligible dependency updates and create or update a managed pull request.
+description: Apply eligible dependency updates and create or update a managed pull request with an update summary body.
 inputs:
   github-token:
     description: GitHub token used for pull request create-or-update calls.

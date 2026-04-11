@@ -95,6 +95,7 @@ Notes:
 - The default `actions/checkout` fetch configuration is sufficient; the action resolves the managed branch state before pushing repeat updates.
 - `contents: write` and `pull-requests: write` are only needed for changed runs that push the managed branch and create or update a PR.
 - The action treats no-op runs as success and emits structured outputs through `GITHUB_OUTPUT`.
+- Changed runs create or update a managed pull request whose body summarizes the applied dependency updates by target, including direct versus indirect labels and vulnerability remediation context when available.
 
 Supported inputs:
 
