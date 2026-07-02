@@ -96,6 +96,37 @@ func TestRenderPullRequestBodyIncludesVulnerabilitiesAndWarnings(t *testing.T) {
 	}
 }
 
+func TestRenderPullRequestBodyIncludesModuleMetadata(t *testing.T) {
+	result := core.RunResult{
+		Mode: "apply",
+		Targets: []core.TargetResult{{
+			Target: config.Target{Name: "app", NormalizedPath: "."},
+			Applied: []core.AppliedUpdate{{
+				ModulePath:   "github.com/example/mod",
+				FromVersion:  "v1.0.0",
+				ToVersion:    "v1.1.0",
+				Relationship: core.RelationshipDirect,
+				Metadata: core.ModuleMetadata{
+					PackageURL:    "https://pkg.go.dev/github.com/example/mod",
+					RepositoryURL: "https://github.com/example/mod",
+					Synopsis:      "Package mod does useful things.",
+				},
+			}},
+		}},
+	}
+
+	body := RenderPullRequestBody(result)
+	for _, want := range []string{
+		"Package mod does useful things.",
+		"[pkg.go.dev](https://pkg.go.dev/github.com/example/mod)",
+		"[repository](https://github.com/example/mod)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+}
+
 func TestRenderPullRequestBodyTruncatesLongDetails(t *testing.T) {
 	longAdvisories := make([]string, 0, 12)
 	for i := 0; i < cap(longAdvisories); i++ {

@@ -57,7 +57,14 @@ type AppliedUpdate struct {
 	ToVersion       string
 	Relationship    DependencyRelationship
 	Vulnerabilities []Vulnerability
+	Metadata        ModuleMetadata
 	CommandOutput   string
+}
+
+type ModuleMetadata struct {
+	PackageURL    string
+	RepositoryURL string
+	Synopsis      string
 }
 
 type Vulnerability struct {

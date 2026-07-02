@@ -88,6 +88,7 @@ type Runtime struct {
 	Git          GitClient
 	PullRequests PullRequestClient
 	Outputs      OutputWriter
+	Metadata     ModuleMetadataClient
 	Log          io.Writer
 }
 
@@ -101,6 +102,7 @@ func Run(ctx context.Context, cfg Config, stdout io.Writer, stderr io.Writer) (O
 		Git:          newCommandGit(),
 		PullRequests: newGitHubClient(nil),
 		Outputs:      fileOutputWriter{path: cfg.OutputPath},
+		Metadata:     newPkgsiteMetadataClient(nil),
 		Log:          stdout,
 	}
 	return runtime.Run(ctx, cfg)
@@ -185,7 +187,7 @@ func (r Runtime) Run(ctx context.Context, cfg Config) (Outputs, error) {
 		return outputs, err
 	}
 
-	body := RenderPullRequestBody(result)
+	body := RenderPullRequestBody(enrichPullRequestMetadata(ctx, result, r.Metadata))
 	prResult, err := r.PullRequests.Ensure(ctx, PullRequestRequest{
 		Repository: cfg.Repository,
 		Token:      cfg.GitHubToken,
