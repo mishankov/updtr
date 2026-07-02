@@ -90,13 +90,36 @@ func renderAppliedUpdates(body *limitedBodyBuilder, limit int, targets []core.Ta
 }
 
 func renderAppliedUpdateLine(update core.AppliedUpdate) string {
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"- `%s`: `%s` -> `%s`%s\n",
 		update.ModulePath,
 		update.FromVersion,
 		update.ToVersion,
 		renderUpdateMetadata(update),
 	)
+	if update.Metadata.PackageURL == "" && update.Metadata.RepositoryURL == "" && update.Metadata.Synopsis == "" {
+		return line
+	}
+
+	details := renderModuleMetadata(update.Metadata)
+	if details == "" {
+		return line
+	}
+	return line + "  - " + details + "\n"
+}
+
+func renderModuleMetadata(metadata core.ModuleMetadata) string {
+	var parts []string
+	if metadata.Synopsis != "" {
+		parts = append(parts, metadata.Synopsis)
+	}
+	if metadata.PackageURL != "" {
+		parts = append(parts, "[pkg.go.dev]("+metadata.PackageURL+")")
+	}
+	if metadata.RepositoryURL != "" {
+		parts = append(parts, "[repository]("+metadata.RepositoryURL+")")
+	}
+	return strings.Join(parts, " ")
 }
 
 func remainingAppliedUpdates(targets []core.TargetResult, targetIndex int, updateIndex int) int {
